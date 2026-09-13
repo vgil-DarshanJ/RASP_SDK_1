@@ -12,6 +12,14 @@
 // Every SDK/version value below is a literal, not sourced from any
 // `flutter.*` Gradle property — this module must compile with no Flutter
 // tooling present at all.
+//
+// Deliberately has no `src/test` or `src/androidTest` here (unlike the
+// sdk_rasp/android_core monorepo copy, which keeps both for local dev
+// QA) — JitPack's own dependency-scanning step chokes with a
+// ConcurrentModificationException while enumerating AGP's "Unified Test
+// Platform" configurations that only exist when androidTest dependencies
+// are declared. This repo's only job is to build+publish the release
+// AAR, which never needed those configurations in the first place.
 
 plugins {
     id("com.android.library") version "9.1.0"
@@ -26,7 +34,6 @@ android {
     defaultConfig {
         minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -36,10 +43,6 @@ android {
 
     buildFeatures {
         buildConfig = true
-    }
-
-    testOptions {
-        unitTests.isReturnDefaultValues = false
     }
 
     // Publishes the "release" AAR variant as a Maven publication — this is
@@ -69,11 +72,6 @@ dependencies {
     // security property: a credential surviving app restart is stored
     // encrypted, tied to the device Keystore, not in a plain XML file.
     implementation("androidx.security:security-crypto:1.1.0")
-
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test:runner:1.5.2")
-    androidTestImplementation("androidx.test:rules:1.5.0")
 }
 
 afterEvaluate {
