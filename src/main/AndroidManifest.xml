@@ -1,0 +1,59 @@
+<!-- No `package=` attribute here on purpose — AGP now requires the
+     namespace to come exclusively from build.gradle.kts's `android.namespace`
+     ("com.shieldsdk.rasp") and rejects a manifest `package=` outright, even
+     one that agrees with it. Does not affect where any Kotlin class in this
+     module lives (still `package com.shieldsdk.rasp`, unchanged). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Package-visibility exemption (API 30+) for the curated risky-app
+         evidence check (Phase 6) — each package here is checked ONLY for
+         presence via PackageManager.getPackageInfo(); this is not a bulk
+         installed-apps query and resolves no other package. Kept identical
+         to the Flutter plugin's manifest so both consumption paths see the
+         exact same curated list — this list must never diverge between the
+         two, since it is itself part of the detection logic. -->
+    <queries>
+        <package android:name="com.teamviewer.quicksupport.market"/>
+        <package android:name="com.teamviewer.host.market"/>
+        <package android:name="com.anydesk.anydeskandroid"/>
+        <package android:name="com.rsupport.mobizen.remote"/>
+        <package android:name="com.remotepc.rpcmobile"/>
+        <package android:name="de.robv.android.xposed"/>
+        <package android:name="com.saurik.substrate"/>
+
+        <!-- Phase 2 — reverse-engineering-tools check
+             (RaspReverseEngineeringToolsProbe). These 7 were MISSING from
+             the pre-refactor manifest, which declared only 2 of the 9
+             packages this check actually queries (and one of those was the
+             wrong exact name — `de.robv.android.xposed`, the framework's
+             own package, not `de.robv.android.xposed.installer`, the
+             installer app the check targets). On API 30+ package-visibility
+             rules, a package not declared here is invisible to
+             PackageManager regardless of whether it is actually installed
+             — the check was silently blind to 7 of 9 targets on every
+             modern device. Fixed here, not worked around in code, since
+             the manifest is the actual mechanism Android provides for
+             this. -->
+        <package android:name="de.robv.android.xposed.installer"/>
+        <package android:name="com.topjohnwu.magisk"/>
+        <package android:name="com.noshufou.android.su"/>
+        <package android:name="com.chelpus.lackypatch"/>
+        <package android:name="com.eltechs.axm"/>
+        <package android:name="io.va.exposed"/>
+        <package android:name="com.sygic.aura"/>
+        <package android:name="org.adaway"/>
+    </queries>
+
+    <!-- INTERNET — Phase 8 only (RaspGeoIpProbes' IP-reputation lookup and
+         RaspCertificatePinProbes' TLS-pin probe; Play Integrity's own
+         Google Play Services client also needs it). Every OTHER detector
+         in this module reads only unrestricted system services (Window,
+         UsbManager, ClipboardManager, Settings.Global/Secure,
+         AccessibilityManager, ConnectivityManager, KeyguardManager,
+         AndroidKeyStore, PackageManager for the <queries>-declared
+         packages above) and needs no manifest permission at all. Almost
+         every real app already declares this permission for its own
+         networking, so this is rarely a new addition in practice — merges
+         automatically into any host app that depends on this module. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+</manifest>
