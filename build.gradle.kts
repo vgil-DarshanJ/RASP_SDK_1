@@ -9,26 +9,33 @@
 // parent monorepo needed) precisely so it can be built and published
 // standalone by JitPack on every tagged release.
 //
+// Pinned to AGP 8.7.2 / Kotlin 2.0.21 / Gradle 8.10.2 — deliberately
+// NOT the bleeding-edge AGP 9.1.0/Gradle 9.3.1 combo the rest of this
+// SDK's monorepo uses. AGP 9's restructured "Unified Test Platform" and
+// new variant-builder internals repeatedly crashed JitPack's own
+// dependency-scanning script (listDeps) with a
+// ConcurrentModificationException — first on the androidTest classpath,
+// then, even after disabling that variant, on the unitTest classpath via
+// an API (HasUnitTestBuilder.enableUnitTest) that should have resolved
+// per AGP's own bytecode but didn't compile in this build script. Rather
+// than keep patching around individual AGP-9-specific config quirks
+// JitPack's tooling hasn't caught up to, this repo targets the same
+// well-proven AGP/Gradle line the vast majority of JitPack-published
+// Android libraries already build against successfully today. Only
+// affects THIS standalone publish target — sdk_rasp/android_core (the
+// monorepo copy) keeps the newer toolchain for local dev.
+//
 // Every SDK/version value below is a literal, not sourced from any
 // `flutter.*` Gradle property — this module must compile with no Flutter
 // tooling present at all.
 //
-// Deliberately has no `src/test` or `src/androidTest` here (unlike the
-// sdk_rasp/android_core monorepo copy, which keeps both for local dev
-// QA). JitPack's own dependency-scanning step (listDeps) chokes with a
-// ConcurrentModificationException enumerating AGP's "Unified Test
-// Platform" configurations (_internal-unified-test-platform-*) — and, it
-// turns out, AGP 9 creates that whole configuration set unconditionally
-// for every library module's androidTest variant, REGARDLESS of whether
-// any androidTest dependency is declared (confirmed: removing them alone
-// didn't change anything). `enableAndroidTest = false` below is what
-// actually stops AGP from creating that variant at all. This repo's only
-// job is to build+publish the release AAR, which never needed an
-// androidTest variant in the first place.
+// No `src/test`/`src/androidTest` here either (unlike the monorepo
+// copy) — this repo's only job is to build+publish the release AAR,
+// which needs neither.
 
 plugins {
-    id("com.android.library") version "9.1.0"
-    id("org.jetbrains.kotlin.android") version "2.4.0"
+    id("com.android.library") version "8.7.2"
+    id("org.jetbrains.kotlin.android") version "2.0.21"
     `maven-publish`
 }
 
@@ -61,15 +68,7 @@ android {
 }
 
 kotlin {
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-    }
-}
-
-androidComponents {
-    beforeVariants {
-        it.enableAndroidTest = false
-    }
+    jvmToolchain(17)
 }
 
 dependencies {

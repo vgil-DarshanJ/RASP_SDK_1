@@ -36,22 +36,30 @@ public object RaspKeystoreProbes {
      * binding is genuinely fine — so [RaspShieldCore]'s facade never has to
      * carry that inverted-boolean landmine forward into a new API surface.
      */
-    fun isDeviceBindingIntact(): Boolean = try {
-        val keyStore = KeyStore.getInstance("AndroidKeyStore")
-        keyStore.load(null)
-        if (!keyStore.containsAlias(KEY_ALIAS)) {
-            generateBindingKey()
-            // First run on this install: the key was just created, so
-            // binding is now intact — matches the original's "return
-            // false" (= binding not-failed) branch immediately after
-            // provisioning, just expressed in the corrected polarity.
-            return true
+    fun isDeviceBindingIntact(): Boolean {
+        // Block body (not an expression body) specifically because of the
+        // early `return true` below — a non-local return from inside an
+        // expression-bodied function's try-block is invalid Kotlin per the
+        // language spec; it only happened to compile here because the
+        // Kotlin 2.4.0 compiler used elsewhere in this SDK is more lenient
+        // about it than the Kotlin 2.0.21 this standalone repo pins to.
+        return try {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore")
+            keyStore.load(null)
+            if (!keyStore.containsAlias(KEY_ALIAS)) {
+                generateBindingKey()
+                // First run on this install: the key was just created, so
+                // binding is now intact — matches the original's "return
+                // false" (= binding not-failed) branch immediately after
+                // provisioning, just expressed in the corrected polarity.
+                return true
+            }
+            keyStore.getEntry(KEY_ALIAS, null) != null
+        } catch (e: Exception) {
+            // Original polarity: any exception here means binding could not be
+            // established/verified, i.e. NOT intact.
+            false
         }
-        keyStore.getEntry(KEY_ALIAS, null) != null
-    } catch (e: Exception) {
-        // Original polarity: any exception here means binding could not be
-        // established/verified, i.e. NOT intact.
-        false
     }
 
     private fun generateBindingKey() {
