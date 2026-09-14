@@ -147,6 +147,17 @@ class RaspClipboardGuard(
      * [RaspSecurityChannelHandler.drainScreenshotEventEvidence]: the count
      * reported is exactly how many primary-clip changes fired since the last
      * read, then resets — a scan never double-reports the same change.
+     *
+     * **This is destructive, single-consumer state — [RaspLeanSession]'s own
+     * poll tick is the one intended caller.** A second, independent caller
+     * (e.g. a host app's own UI polling this on its own timer to show a live
+     * "changes so far" readout) draining the same counter corrupts what the
+     * lean session sees: every tick's read comes back inconsistent, which
+     * looks like — and produces — a constantly-changing signature, so the
+     * lean session ships this detector's "still SECURE" result on nearly
+     * every poll instead of the intended once-as-baseline behavior. A host
+     * app that wants to show live evidence in its own UI should call
+     * [peekEvidence] instead, which never resets anything.
      */
     fun drainEvidence(): Map<String, Any?> {
         val count = changeCount
@@ -158,6 +169,25 @@ class RaspClipboardGuard(
             "auto_clear_enabled" to autoClearOnCopy,
             "change_count" to count,
             "last_change_at_millis" to lastAt,
+        )
+    }
+
+    /**
+     * Same shape as [drainEvidence], but read-only — never resets
+     * [changeCount]. Safe to call from a host app's own UI on any timer of
+     * its choosing, as many times as it wants, with zero effect on what
+     * [RaspLeanSession] (which calls [drainEvidence]) sees or ships. Use
+     * this for a live on-screen "changes so far" display; use [drainEvidence]
+     * only if you are implementing your own event-shipping loop instead of
+     * using [RaspLeanSession].
+     */
+    fun peekEvidence(): Map<String, Any?> {
+        return mapOf(
+            "supported" to (clipboardManager != null),
+            "active" to listening,
+            "auto_clear_enabled" to autoClearOnCopy,
+            "change_count" to changeCount,
+            "last_change_at_millis" to lastChangeAtMillis,
         )
     }
 

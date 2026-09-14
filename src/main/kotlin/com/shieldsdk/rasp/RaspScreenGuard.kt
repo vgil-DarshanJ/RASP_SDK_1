@@ -187,6 +187,21 @@ class RaspScreenGuard {
     }
 
     /**
+     * Read-only counterpart to [drainScreenshotEventEvidence] — never resets
+     * the counter. [RaspLeanSession] (native) uses the destructive drain
+     * above on its own poll tick; a host app polling this class directly for
+     * its own live UI should use this one instead, so it can never reset a
+     * count the lean session hasn't seen yet — same risk [RaspClipboardGuard]
+     * .peekEvidence exists to avoid.
+     */
+    fun peekScreenshotEventEvidence(): RaspScreenshotEventEvidence = RaspScreenshotEventEvidence(
+        supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+        detected = screenshotEventCount > 0,
+        count = screenshotEventCount,
+        lastAtMillis = lastScreenshotEventAtMillis,
+    )
+
+    /**
      * What this build/OS combination can actually do. See this class's
      * doc for why screen-recording/casting has no complementary
      * *detection* capability on any Android API level — `FLAG_SECURE` is
