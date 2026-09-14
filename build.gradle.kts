@@ -22,8 +22,10 @@
 // JitPack's tooling hasn't caught up to, this repo targets the same
 // well-proven AGP/Gradle line the vast majority of JitPack-published
 // Android libraries already build against successfully today. Only
-// affects THIS standalone publish target — sdk_rasp/android_core (the
-// monorepo copy) keeps the newer toolchain for local dev.
+// affects THIS standalone publish target. (The monorepo used to keep a
+// separate copy of this source on the newer toolchain for local dev —
+// that copy was removed once every consumer switched to the JitPack
+// coordinate this repo publishes, so this is now the only copy.)
 //
 // Every SDK/version value below is a literal, not sourced from any
 // `flutter.*` Gradle property — this module must compile with no Flutter
