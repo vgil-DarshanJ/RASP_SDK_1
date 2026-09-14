@@ -13,7 +13,11 @@ import android.content.Context
  * background app from *reading* another app's clipboard content — and even
  * for this app's own copies, reading arbitrary clipboard content back is a
  * sensitive-data liability an SDK has no legitimate reason to take on. This
- * class never reads clip *content*, only whether a change happened.
+ * class never inspects, stores, or reports *what* was copied — the one
+ * exception is checking whether the current clip's length is exactly zero
+ * (see [isClipCurrentlyEmpty]), which is how a real copy is told apart from
+ * this guard's own clear() reporting itself back; that check never sees,
+ * keeps, or exposes the actual text when it's non-empty.
  *
  * ## What it does
  *
@@ -67,19 +71,6 @@ class RaspClipboardGuard(
     private var lastChangeAtMillis: Long? = null
 
     /**
-     * Set immediately before [clear] calls [ClipboardManager.setPrimaryClip],
-     * consumed by the very next [onPrimaryClipChanged] callback that fires as
-     * a *direct result* of that call. Without this, `setPrimaryClip` firing
-     * its own listener is indistinguishable from a real external copy:
-     * `onPrimaryClipChanged` → `clear()` → `setPrimaryClip` → fires
-     * `onPrimaryClipChanged` again → `clear()` again → forever. This flag is
-     * the only thing that breaks that cycle — a real external copy never
-     * sets it, so it is never suppressed.
-     */
-    @Volatile
-    private var suppressNextChange = false
-
-    /**
      * Starts monitoring (and, if [autoClearOnCopy], enforcing). Returns
      * `false` only when this device/build has no [ClipboardManager] at all —
      * never throws.
@@ -119,15 +110,34 @@ class RaspClipboardGuard(
     fun clear(): Boolean {
         val manager = clipboardManager ?: return false
         return try {
-            // Mark the change this call is about to cause as "ours" before
-            // making it — setPrimaryClip fires onPrimaryClipChanged
-            // synchronously-enough on the same thread that this flag is
-            // reliably still set when that callback runs.
-            suppressNextChange = true
             manager.setPrimaryClip(ClipData.newPlainText("", ""))
             true
         } catch (e: Exception) {
-            suppressNextChange = false
+            false
+        }
+    }
+
+    /**
+     * `true` when the current primary clip has no text in it. Used only to
+     * tell "this change was our own clear (or something else already
+     * emptied it)" apart from "this is a real copy" — a direct reality
+     * check, not a guess based on call timing/ordering. Deliberately does
+     * NOT distinguish or log *what* non-empty text is present — only
+     * whether the length is zero, which carries no user data.
+     */
+    private fun isClipCurrentlyEmpty(): Boolean {
+        val manager = clipboardManager ?: return true
+        return try {
+            val clip = manager.primaryClip
+            val text = if (clip != null && clip.itemCount > 0) {
+                clip.getItemAt(0).coerceToText(null)?.toString()
+            } else {
+                null
+            }
+            text.isNullOrEmpty()
+        } catch (e: Exception) {
+            // Could not read it either way — treat as "not our concern",
+            // never as a reason to skip clearing a real copy.
             false
         }
     }
@@ -152,11 +162,14 @@ class RaspClipboardGuard(
     }
 
     override fun onPrimaryClipChanged() {
-        if (suppressNextChange) {
-            // This is our own clear() call reporting itself back — not a
-            // real copy. Consume the flag and stop here, or this and clear()
-            // retrigger each other forever.
-            suppressNextChange = false
+        // A change that leaves the clip empty is either our own clear()
+        // reporting itself back, or something else emptying it — either
+        // way, not a real copy to react to. Checking the actual current
+        // state (instead of a "was I mid-clear a moment ago" flag) is what
+        // makes this correct under rapid, overlapping copies: each callback
+        // judges reality at the instant it fires, with nothing left over
+        // from an earlier call that may not have finished yet.
+        if (isClipCurrentlyEmpty()) {
             return
         }
         changeCount += 1
