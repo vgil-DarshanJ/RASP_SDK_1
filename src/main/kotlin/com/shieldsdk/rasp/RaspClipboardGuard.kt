@@ -67,6 +67,19 @@ class RaspClipboardGuard(
     private var lastChangeAtMillis: Long? = null
 
     /**
+     * Set immediately before [clear] calls [ClipboardManager.setPrimaryClip],
+     * consumed by the very next [onPrimaryClipChanged] callback that fires as
+     * a *direct result* of that call. Without this, `setPrimaryClip` firing
+     * its own listener is indistinguishable from a real external copy:
+     * `onPrimaryClipChanged` → `clear()` → `setPrimaryClip` → fires
+     * `onPrimaryClipChanged` again → `clear()` again → forever. This flag is
+     * the only thing that breaks that cycle — a real external copy never
+     * sets it, so it is never suppressed.
+     */
+    @Volatile
+    private var suppressNextChange = false
+
+    /**
      * Starts monitoring (and, if [autoClearOnCopy], enforcing). Returns
      * `false` only when this device/build has no [ClipboardManager] at all —
      * never throws.
@@ -106,9 +119,15 @@ class RaspClipboardGuard(
     fun clear(): Boolean {
         val manager = clipboardManager ?: return false
         return try {
+            // Mark the change this call is about to cause as "ours" before
+            // making it — setPrimaryClip fires onPrimaryClipChanged
+            // synchronously-enough on the same thread that this flag is
+            // reliably still set when that callback runs.
+            suppressNextChange = true
             manager.setPrimaryClip(ClipData.newPlainText("", ""))
             true
         } catch (e: Exception) {
+            suppressNextChange = false
             false
         }
     }
@@ -133,6 +152,13 @@ class RaspClipboardGuard(
     }
 
     override fun onPrimaryClipChanged() {
+        if (suppressNextChange) {
+            // This is our own clear() call reporting itself back — not a
+            // real copy. Consume the flag and stop here, or this and clear()
+            // retrigger each other forever.
+            suppressNextChange = false
+            return
+        }
         changeCount += 1
         lastChangeAtMillis = System.currentTimeMillis()
         if (autoClearOnCopy) {
