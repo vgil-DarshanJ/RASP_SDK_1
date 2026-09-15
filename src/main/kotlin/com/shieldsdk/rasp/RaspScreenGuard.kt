@@ -151,6 +151,15 @@ class RaspScreenGuard {
             }
             target.registerScreenCaptureCallback(target.mainExecutor, callback)
             screenCaptureCallback = callback
+            // ScreenshotGuard.enable(target) — applying FLAG_SECURE — runs
+            // an instant before this registration, on every attach()
+            // unconditionally. Discard anything already counted at this
+            // exact moment so that sequence (or the registration call
+            // itself) can never be misreported as a real screenshot the
+            // user just took; a genuine one taken any time after this line
+            // still increments normally.
+            screenshotEventCount = 0
+            lastScreenshotEventAtMillis = null
         } catch (e: Exception) {
             screenCaptureCallback = null
         }
