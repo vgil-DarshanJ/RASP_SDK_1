@@ -56,6 +56,20 @@ import android.view.Window
  */
 class RaspScreenGuard {
 
+    companion object {
+        /**
+         * Suppression window (see [registerScreenCaptureCallback]) for
+         * platform-generated `ScreenCaptureCallback` noise around Activity
+         * start/registration — chiefly Android's task-snapshot capture for
+         * Recents. 2s comfortably covers a `mainExecutor`-queued delayed
+         * fire on real hardware without meaningfully widening the gap in
+         * which a genuine startup-time screenshot goes undetected (a user
+         * cannot physically trigger a hardware-button screenshot in under
+         * ~2s of the app becoming visible).
+         */
+        private const val SCREEN_CAPTURE_STARTUP_SUPPRESSION_MILLIS = 2000L
+    }
+
     private var activity: Activity? = null
     private var originalWindowCallback: Window.Callback? = null
     private var screenCaptureCallback: Activity.ScreenCaptureCallback? = null
@@ -69,6 +83,10 @@ class RaspScreenGuard {
     @Volatile
     private var lastScreenshotEventAtMillis: Long? = null
 
+    /** See [registerScreenCaptureCallback]'s doc for why this exists. */
+    @Volatile
+    private var screenCaptureRegisteredAtMillis: Long = 0L
+
     /**
      * Applies `FLAG_SECURE`, installs touch-obscured tracking, and
      * registers the screenshot-event callback (API 34+ only). Safe to call
@@ -80,6 +98,27 @@ class RaspScreenGuard {
         activity = target
 
         ScreenshotGuard.enable(target)
+
+        // Tell the platform to never generate a task-snapshot screenshot of
+        // this Activity for the Recents UI (API 33+; default `true` on
+        // every Activity). That snapshot is taken automatically around
+        // Activity start on every launch, independent of any user action,
+        // and on-device testing shows it can be observed by
+        // ScreenCaptureCallback (registered below) as a spurious
+        // "screenshot taken" event the instant the app opens. This is the
+        // primary fix for that false positive; the startup suppression
+        // window in registerScreenCaptureCallback is the fallback for OS
+        // versions/OEM skins where this request isn't honored. See
+        // https://source.android.com/docs/core/perf/task-snapshots.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                target.setRecentsScreenshotEnabled(false)
+            } catch (e: Exception) {
+                // Purely a false-positive mitigation, not a security
+                // control — never block attach() on this.
+            }
+        }
+
         installTouchObscuredTracking(target)
         registerScreenCaptureCallback(target)
     }
@@ -146,20 +185,33 @@ class RaspScreenGuard {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
         try {
             val callback = Activity.ScreenCaptureCallback {
-                screenshotEventCount += 1
-                lastScreenshotEventAtMillis = System.currentTimeMillis()
+                val now = System.currentTimeMillis()
+                // Drop anything landing inside the startup suppression
+                // window — see the class-level constant doc. Not a
+                // one-shot flush: `registerScreenCaptureCallback` dispatches
+                // through `target.mainExecutor` (a posted message, not a
+                // synchronous call), so a spurious fire tied to
+                // registration/task-snapshot capture can still arrive on
+                // the main looper after a flush already ran. A window
+                // survives that delay; a single reset does not.
+                if (now - screenCaptureRegisteredAtMillis >= SCREEN_CAPTURE_STARTUP_SUPPRESSION_MILLIS) {
+                    screenshotEventCount += 1
+                    lastScreenshotEventAtMillis = now
+                }
             }
             target.registerScreenCaptureCallback(target.mainExecutor, callback)
             screenCaptureCallback = callback
             // ScreenshotGuard.enable(target) — applying FLAG_SECURE — runs
             // an instant before this registration, on every attach()
             // unconditionally. Discard anything already counted at this
-            // exact moment so that sequence (or the registration call
-            // itself) can never be misreported as a real screenshot the
-            // user just took; a genuine one taken any time after this line
-            // still increments normally.
+            // exact moment, and arm the suppression window from right now,
+            // so that sequence (or the registration call itself, or a
+            // delayed task-snapshot fire) can never be misreported as a
+            // real screenshot the user just took; a genuine one taken
+            // after the window elapses still increments normally.
             screenshotEventCount = 0
             lastScreenshotEventAtMillis = null
+            screenCaptureRegisteredAtMillis = System.currentTimeMillis()
         } catch (e: Exception) {
             screenCaptureCallback = null
         }
