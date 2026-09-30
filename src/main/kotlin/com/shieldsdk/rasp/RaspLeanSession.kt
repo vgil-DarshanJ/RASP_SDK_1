@@ -118,7 +118,24 @@ public class RaspLeanSession private constructor(
         add(config.overlayDetection, "overlay") { RaspShieldCore.checkOverlayBlocking(appContext, screenGuard) }
         add(config.accessibilityDetection, "accessibility") { RaspShieldCore.checkAccessibilityBlocking(appContext) }
         add(config.externalDisplayDetection, "external_display") { RaspShieldCore.checkExternalDisplayBlocking(appContext) }
+        add(config.screenshotEventDetection, "screenshot_event") { screenshotEventResult() }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
+    }
+
+    private fun screenshotEventResult(): RaspCheckResult {
+        val guard = screenGuard ?: return RaspCheckResult.unavailable(
+            "screenshot_event", "Screenshot-event detection requires an attached screen guard"
+        )
+        val event = guard.drainScreenshotEventEvidence()
+        if (!event.supported) return RaspCheckResult.unavailable(
+            "screenshot_event", "Screenshot-event detection requires Android 14+"
+        )
+        val evidence = listOf(
+            RaspEvidence("count", event.count),
+            RaspEvidence("last_at_millis", event.lastAtMillis),
+        )
+        return if (event.detected) RaspCheckResult.detected("screenshot_event", evidence)
+        else RaspCheckResult.secure("screenshot_event", evidence)
     }
 
     private fun controlResults(active: Boolean?, usbConnected: Boolean?, count: Int, adb: Boolean?, clip: Boolean?, clipCount: Int): List<RaspCheckResult> = buildList {
@@ -143,7 +160,12 @@ public class RaspLeanSession private constructor(
     private fun withLocation(result: RaspCheckResult): RaspCheckResult {
         val location = currentLocation ?: return result
         if (!result.status.isThreat) return result
-        return result.copy(evidence = result.evidence + listOf(RaspEvidence("latitude", location.latitude), RaspEvidence("longitude", location.longitude)))
+        return result.copy(evidence = result.evidence + listOf(
+            RaspEvidence("latitude", location.latitude),
+            RaspEvidence("longitude", location.longitude),
+            RaspEvidence("location_accuracy_m", location.accuracyMeters),
+            RaspEvidence("location_captured_at_millis", location.capturedAtMillis),
+        ))
     }
 
     public fun dispose() { if (disposed.compareAndSet(false, true)) { scheduled?.cancel(false); scheduler.shutdownNow(); timedDetector.shutdown(); if (config.clipboardProtection) clipboard.disable() } }
