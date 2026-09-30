@@ -3,66 +3,75 @@ package com.shieldsdk.rasp
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
 import java.net.NetworkInterface
+import java.security.KeyStore
 import java.util.Collections
 
-/**
- * Network-layer probes: active VPN transport and system-proxy (MITM)
- * indicators. Verbatim port of
- * `RaspSecurityChannelHandler.isVpnActive()`/`isMitmDetected()`.
- *
- * ## Scope note — this is the native-only half of MITM detection
- *
- * The Dart side's `MitmDetector` additionally falls back to
- * `SslPinningService.isMitmDetected()`, a TLS-handshake probe against the
- * SDK's own backend when the native proxy check finds nothing. That
- * requires a live network call to a configured backend host and is
- * deliberately out of scope here (Android Native/Flutter Feature Parity
- * plan, Phase 8) — this native SDK has no backend URL of its own to probe
- * against. [isMitmDetected] here reports only the system-proxy signal,
- * same as [RaspSecurityChannelHandler]'s own native-only half already did
- * before this port.
- */
+/** Network signals used by the VPN and MITM detectors. */
 public object RaspNetworkProbes {
-
-    /**
-     * `true` when traffic is routed through a VPN — checked two ways:
-     * the platform's own `NetworkCapabilities.TRANSPORT_VPN` flag first
-     * (authoritative when available), falling back to scanning for
-     * `tun`/`ppp`/`tap`-named interfaces (catches VPN apps that don't
-     * register through `ConnectivityManager` in the expected way).
-     */
-    fun isVpnActive(context: Context): Boolean {
-        val viaCapabilities = try {
+    /** `null` means neither platform probe could run; it is not a clean result. */
+    fun isVpnActive(context: Context): Boolean? {
+        var attempted = false
+        try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val network = cm.activeNetwork
-            val caps = cm.getNetworkCapabilities(network)
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ?: false
-        } catch (e: Exception) {
-            false
-        }
-        if (viaCapabilities) return true
-
-        return try {
-            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-            interfaces.any { intf ->
-                if (!intf.isUp || intf.interfaceAddresses.isEmpty()) return@any false
-                val name = intf.name.lowercase()
-                name.contains("tun") || name.contains("ppp") || name.contains("tap")
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            if (caps != null) {
+                attempted = true
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return true
             }
-        } catch (e: Exception) {
-            false
-        }
+        } catch (_: Exception) { }
+        try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            attempted = true
+            if (interfaces.any { intf ->
+                    intf.isUp && intf.interfaceAddresses.isNotEmpty() &&
+                        intf.name.lowercase().let { it.contains("tun") || it.contains("ppp") || it.contains("tap") }
+                }) return true
+        } catch (_: Exception) { }
+        return if (attempted) false else null
     }
 
     /**
-     * `true` when a system-level HTTP proxy is configured — the cheap,
-     * always-available half of MITM detection. See the class doc for the
-     * TLS-probe half this native SDK does not include.
+     * Proxy and user-CA interception indicators. A user CA is evidence, not a
+     * claim that every enterprise profile is malicious; policy decides action.
      */
-    fun isSystemProxyConfigured(): Boolean = try {
-        !System.getProperty("http.proxyHost").isNullOrEmpty()
-    } catch (e: Exception) {
-        false
+    fun mitmSignals(context: Context): Set<String> = buildSet {
+        proxySignals().forEach(::add)
+        if (hasUserInstalledCa()) add("user_installed_ca")
+        if (hasPlatformProxy(context)) add("platform_proxy")
     }
+
+    @JvmStatic
+    fun proxySignals(properties: Map<String, String?> = mapOf(
+        "http.proxyHost" to System.getProperty("http.proxyHost"),
+        "https.proxyHost" to System.getProperty("https.proxyHost"),
+        "http.proxySet" to System.getProperty("http.proxySet"),
+    )): Set<String> = buildSet {
+        if (!properties["http.proxyHost"].isNullOrBlank()) add("http_proxy")
+        if (!properties["https.proxyHost"].isNullOrBlank()) add("https_proxy")
+        if (properties["http.proxySet"].equals("true", ignoreCase = true)) add("http_proxy_set")
+    }
+
+    /** Retained for source compatibility; new code should consume named signals. */
+    fun isSystemProxyConfigured(): Boolean = proxySignals().isNotEmpty()
+
+    private fun hasPlatformProxy(context: Context): Boolean = try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            cm.defaultProxy != null
+        } else {
+            @Suppress("DEPRECATION") cm.defaultProxy != null
+        }
+    } catch (_: Exception) { false }
+
+    /** AndroidCAStore exposes aliases prefixed `user:` for user-added roots. */
+    @JvmStatic
+    fun hasUserInstalledCa(): Boolean = try {
+        val store = KeyStore.getInstance("AndroidCAStore")
+        store.load(null)
+        val aliases = store.aliases()
+        generateSequence { if (aliases.hasMoreElements()) aliases.nextElement() else null }
+            .any { it.startsWith("user:") }
+    } catch (_: Exception) { false }
 }

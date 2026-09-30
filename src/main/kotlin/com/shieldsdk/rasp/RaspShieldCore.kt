@@ -76,7 +76,7 @@ object RaspShieldCore {
     private var pinnedHost: String? = null
 
     @Volatile
-    private var pinnedCertificateSha256: String? = null
+    private var pinnedCertificatePins: RaspCertificatePinProbes.PinSet? = null
 
     /**
      * Configures the backend host + expected certificate fingerprint for
@@ -86,9 +86,16 @@ object RaspShieldCore {
      * plain, explicit parameter your app supplies, exactly like
      * [configureExpectedSigningCertificate].
      */
-    fun configureCertificatePin(host: String?, pinnedSha256Hex: String?) {
+    fun configureCertificatePin(host: String?, pinnedSpkiPin: String?) {
         pinnedHost = host?.takeIf { it.isNotBlank() }
-        pinnedCertificateSha256 = pinnedSha256Hex?.takeIf { it.isNotBlank() }
+        pinnedCertificatePins = pinnedSpkiPin?.takeIf { it.isNotBlank() }
+            ?.let { RaspCertificatePinProbes.PinSet(setOf(it)) }
+    }
+
+    @JvmStatic
+    fun configureCertificatePins(host: String?, current: Set<String>, backup: Set<String> = emptySet(), revoked: Set<String> = emptySet()) {
+        pinnedHost = host?.takeIf { it.isNotBlank() }
+        pinnedCertificatePins = RaspCertificatePinProbes.PinSet(current, backup, revoked)
     }
 
     private val backgroundExecutor: ExecutorService =
@@ -145,12 +152,14 @@ object RaspShieldCore {
 
     fun checkRootBlocking(context: Context): RaspCheckResult = runGuarded("root_jailbreak") {
         val probes = RaspDeviceIntegrityProbes(context)
-        val signals = probes.rootSignals()
-        val rooted = RaspRootAnalysis.isRooted(signals)
+        val (signals, verdict) = probes.rootAssessment()
         val evidence = signals.map { RaspEvidence("root_signal", it) } +
             listOf(RaspEvidence("signal_count", signals.size))
-        if (rooted) RaspCheckResult.detected("root_jailbreak", evidence)
-        else RaspCheckResult.secure("root_jailbreak", evidence)
+        when (verdict) {
+            RaspRootAnalysis.RootVerdict.DETECTED -> RaspCheckResult.detected("root_jailbreak", evidence)
+            RaspRootAnalysis.RootVerdict.CLEAN -> RaspCheckResult.secure("root_jailbreak", evidence)
+            RaspRootAnalysis.RootVerdict.UNAVAILABLE -> RaspCheckResult.unavailable("root_jailbreak", "Root mount-table probe unavailable")
+        }
     }
 
     fun checkRootAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -180,12 +189,15 @@ object RaspShieldCore {
                     "device_binding", "AndroidKeyStore hardware binding requires API 23+"
                 )
             }
-            val intact = RaspKeystoreProbes.isDeviceBindingIntact()
-            if (intact) RaspCheckResult.secure("device_binding")
-            else RaspCheckResult.detected(
-                "device_binding",
-                listOf(RaspEvidence("reason", "keystore_binding_key_missing_or_unreadable"))
-            )
+            when (RaspKeystoreProbes.deviceBindingState()) {
+                RaspKeystoreProbes.DeviceBindingState.INTACT -> RaspCheckResult.secure("device_binding")
+                RaspKeystoreProbes.DeviceBindingState.PROVISIONED_NOW -> RaspCheckResult.unavailable(
+                    "device_binding", "Binding key was provisioned; server binding has not been verified"
+                )
+                RaspKeystoreProbes.DeviceBindingState.UNAVAILABLE -> RaspCheckResult.unavailable(
+                    "device_binding", "Keystore binding key is unavailable"
+                )
+            }
         }
 
     fun checkDeviceBindingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -302,9 +314,11 @@ object RaspShieldCore {
 
     fun checkDeviceLockMissingBlocking(context: Context): RaspCheckResult =
         runGuarded("device_lock_missing") {
-            val missing = RaspDeviceFingerprintProbes.isDeviceLockMissing(context)
-            if (missing) RaspCheckResult.detected("device_lock_missing")
-            else RaspCheckResult.secure("device_lock_missing")
+            when (RaspDeviceFingerprintProbes.isDeviceLockMissing(context)) {
+                true -> RaspCheckResult.detected("device_lock_missing")
+                false -> RaspCheckResult.secure("device_lock_missing")
+                null -> RaspCheckResult.unavailable("device_lock_missing", "Keyguard state unavailable")
+            }
         }
 
     fun checkDeviceLockMissingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -511,8 +525,11 @@ object RaspShieldCore {
     // ═══════════════════════════════════════════════════════════════════
 
     fun checkVpnBlocking(context: Context): RaspCheckResult = runGuarded("vpn") {
-        if (RaspNetworkProbes.isVpnActive(context)) RaspCheckResult.detected("vpn")
-        else RaspCheckResult.secure("vpn")
+        when (RaspNetworkProbes.isVpnActive(context)) {
+            true -> RaspCheckResult.detected("vpn")
+            false -> RaspCheckResult.secure("vpn")
+            null -> RaspCheckResult.unavailable("vpn", "VPN probes unavailable")
+        }
     }
 
     fun checkVpnAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -528,27 +545,32 @@ object RaspShieldCore {
      * Phase 8.
      */
     fun checkMitmBlocking(context: Context): RaspCheckResult = runGuarded("mitm") {
-        if (RaspNetworkProbes.isSystemProxyConfigured()) {
+        val networkSignals = RaspNetworkProbes.mitmSignals(context)
+        if (networkSignals.isNotEmpty()) {
             return@runGuarded RaspCheckResult.detected(
-                "mitm", listOf(RaspEvidence("source", "native_proxy_check"))
+                "mitm", networkSignals.map { RaspEvidence("network_signal", it) }
             )
         }
 
         val host = pinnedHost
-        val pin = pinnedCertificateSha256
-        if (host == null || pin == null) {
-            return@runGuarded RaspCheckResult.secure("mitm")
+        val pins = pinnedCertificatePins
+        if (host == null || pins == null || !pins.isConfigured()) {
+            return@runGuarded RaspCheckResult.unavailable("mitm", "No SPKI pin set is configured")
         }
 
         // Real network I/O — this branch only runs when the cheap native
         // check found nothing AND a pin is configured. Call off the main
         // thread; use checkMitmAsync from UI code.
-        when (RaspCertificatePinProbes.checkCertificatePin(host, pin)) {
+        when (RaspCertificatePinProbes.checkCertificatePin(host, pins)) {
             CertificatePinCheckResult.MISMATCH -> RaspCheckResult.detected(
                 "mitm", listOf(RaspEvidence("source", "tls_pinning_probe"))
             )
             CertificatePinCheckResult.MATCH -> RaspCheckResult.secure("mitm")
-            CertificatePinCheckResult.NOT_ATTEMPTED -> RaspCheckResult.secure("mitm")
+            CertificatePinCheckResult.REVOKED -> RaspCheckResult.detected(
+                "mitm", listOf(RaspEvidence("source", "tls_spki_revoked"))
+            )
+            CertificatePinCheckResult.NOT_ATTEMPTED -> RaspCheckResult.unavailable("mitm", "TLS pin probe did not complete")
+            CertificatePinCheckResult.INVALID_CONFIGURATION -> RaspCheckResult.unavailable("mitm", "TLS pin configuration is invalid")
         }
     }
 
