@@ -5,11 +5,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class RaspTimedDetectorTest {
-    @Test fun `timed out detector is unavailable not secure`() {
+    @Test fun `timed out detector is ERROR not unavailable`() {
         val detector = RaspTimedDetector()
         try {
             val result = detector.run("slow", 1) { Thread.sleep(100); RaspCheckResult.secure("slow") }
-            assertEquals(RaspCheckStatus.UNAVAILABLE, result.status)
+            assertEquals(RaspCheckStatus.ERROR, result.status)
         } finally { detector.shutdown() }
     }
 

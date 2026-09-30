@@ -153,7 +153,9 @@ object RaspShieldCore {
     fun checkRootBlocking(context: Context): RaspCheckResult = runGuarded("root_jailbreak") {
         val probes = RaspDeviceIntegrityProbes(context)
         val (signals, verdict) = probes.rootAssessment()
+        val posture = probes.posturesSignals()
         val evidence = signals.map { RaspEvidence("root_signal", it) } +
+            posture.map { RaspEvidence("build_posture", it, "low_severity") } +
             listOf(RaspEvidence("signal_count", signals.size))
         when (verdict) {
             RaspRootAnalysis.RootVerdict.DETECTED -> RaspCheckResult.detected("root_jailbreak", evidence)
@@ -208,26 +210,37 @@ object RaspShieldCore {
     fun checkDeviceFingerprintBlocking(context: Context): RaspCheckResult =
         runGuarded("device_fingerprint") {
             val fp = RaspDeviceFingerprintProbes.readFingerprint(context)
-                ?: return@runGuarded RaspCheckResult.error(
-                    "device_fingerprint", "Fingerprint read failed catastrophically"
+                ?: return@runGuarded RaspCheckResult.unknown(
+                    "device_fingerprint", "Device fingerprint security state could not be read"
                 )
 
             val failedChecks = buildList {
-                if (!fp.screenLockEnabled) add("no_screen_lock")
+                if (fp.screenLockEnabled == false) add("no_screen_lock")
                 if (fp.adbEnabled) add("adb_enabled")
-                if (!fp.selinuxEnforcing) add("selinux_permissive")
+                if (fp.selinuxEnforcing == false) add("selinux_permissive")
                 if (fp.installSource == "unknown") add("unknown_install_source")
             }
 
+            val unknownChecks = buildList {
+                if (fp.screenLockEnabled == null) add("screen_lock_unknown")
+                if (fp.selinuxEnforcing == null) add("selinux_unknown")
+            }
             val evidence = failedChecks.map { RaspEvidence("device_fingerprint_signal", it) } +
+                unknownChecks.map { RaspEvidence("device_fingerprint_unknown", it) } +
                 listOf(
                     RaspEvidence("model", fp.model),
                     RaspEvidence("manufacturer", fp.manufacturer),
                     RaspEvidence("install_source", fp.installSource),
                 )
 
-            if (failedChecks.isNotEmpty()) RaspCheckResult.detected("device_fingerprint", evidence)
-            else RaspCheckResult.secure("device_fingerprint", evidence)
+            when {
+                failedChecks.isNotEmpty() -> RaspCheckResult.detected("device_fingerprint", evidence)
+                unknownChecks.isNotEmpty() -> RaspCheckResult(
+                    "device_fingerprint", RaspCheckStatus.UNKNOWN, evidence,
+                    "Device fingerprint contains unreadable security state"
+                )
+                else -> RaspCheckResult.secure("device_fingerprint", evidence)
+            }
         }
 
     fun checkDeviceFingerprintAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -313,12 +326,15 @@ object RaspShieldCore {
     // ── Device lock (PIN/pattern/password/biometric) ─────────────────
 
     fun checkDeviceLockMissingBlocking(context: Context): RaspCheckResult =
-        runGuarded("device_lock_missing") {
+        try {
             when (RaspDeviceFingerprintProbes.isDeviceLockMissing(context)) {
                 true -> RaspCheckResult.detected("device_lock_missing")
                 false -> RaspCheckResult.secure("device_lock_missing")
-                null -> RaspCheckResult.unavailable("device_lock_missing", "Keyguard state unavailable")
+                null -> RaspCheckResult.unknown("device_lock_missing", "Keyguard state could not be read")
             }
+        } catch (e: Exception) {
+            notifyLogger("device_lock_missing", e)
+            RaspCheckResult.unknown("device_lock_missing", "Keyguard state could not be read")
         }
 
     fun checkDeviceLockMissingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
