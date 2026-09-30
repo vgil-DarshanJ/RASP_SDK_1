@@ -59,20 +59,8 @@ public object RaspRiskyAppProbes {
             val enabledServices = am.getEnabledAccessibilityServiceList(
                 AccessibilityServiceInfo.FEEDBACK_ALL_MASK
             )
-            for (service in enabledServices) {
-                val pkgName = service.resolveInfo.serviceInfo.packageName
-                if (pkgName.startsWith("com.android.") ||
-                    pkgName.startsWith("com.google.android.") ||
-                    pkgName.contains("talkback") ||
-                    knownRiskyPackages.containsKey(pkgName)
-                ) continue
-                results.add(
-                    RiskyAppSignal(
-                        pkgName, RiskyAppCategory.SUSPICIOUS_BEHAVIOR,
-                        "active_third_party_accessibility_service",
-                    )
-                )
-            }
+            // Accessibility is an assistive technology. Presence alone is
+            // neither malicious nor sufficient to label an app risky.
         } catch (e: Exception) {
             // Accessibility query failed — omitted, same reasoning as above.
         }

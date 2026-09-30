@@ -101,10 +101,11 @@ public object RaspDeviceFingerprintProbes {
         }
     }
 
-    fun isDeviceLockMissing(context: Context): Boolean = try {
+    /** `null` means the keyguard service could not be queried; never treat that as clean. */
+    fun isDeviceLockMissing(context: Context): Boolean? = try {
         val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         km.isDeviceSecure.not()
     } catch (e: Exception) {
-        false
+        null
     }
 }

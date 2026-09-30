@@ -23,14 +23,12 @@ import android.content.Context
 public object RaspReverseEngineeringToolsProbe {
 
     val reTools = listOf(
-        "com.sygic.aura",
         "de.robv.android.xposed.installer",
         "io.va.exposed",
         "com.chelpus.lackypatch",
         "com.eltechs.axm",
         "com.saurik.substrate",
         "com.topjohnwu.magisk",
-        "org.adaway",
         "com.noshufou.android.su",
     )
 

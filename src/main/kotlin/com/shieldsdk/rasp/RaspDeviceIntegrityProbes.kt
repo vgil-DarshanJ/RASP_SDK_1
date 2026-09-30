@@ -76,7 +76,7 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
                 hits.add("root_cloaking_app")
             }
 
-            if (RaspRootAnalysis.tagsIndicateTestKeys(Build.TAGS)) hits.add("test_keys")
+            // A custom ROM's test-keys alone is not a root verdict.
 
             // `ro.debuggable` / `ro.secure` are not readable by an app on
             // modern Android: `getprop` returns "" with exit code 0. The reads
@@ -84,9 +84,7 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
             // OEM makes them visible again, but the *silent* failure is now
             // explicit — an unreadable property is NOT_ACCESSIBLE, never a
             // clean result. See propertyAccess() and the validation doc.
-            if (RaspRootAnalysis.propIndicatesDebuggable(readProp("ro.debuggable"))) {
-                hits.add("ro_debuggable")
-            }
+            // userdebug build properties are posture, not root evidence.
             if (RaspRootAnalysis.propIndicatesInsecure(readProp("ro.secure"))) {
                 hits.add("ro_insecure")
             }
@@ -154,10 +152,7 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
             if (RaspRootAnalysis.rootCloakingPackages.any { isPackageInstalled(it) }) {
                 hits.add("root_cloaking_app")
             }
-            if (RaspRootAnalysis.tagsIndicateTestKeys(Build.TAGS)) hits.add("test_keys")
-            if (RaspRootAnalysis.propIndicatesDebuggable(readProp("ro.debuggable"))) {
-                hits.add("ro_debuggable")
-            }
+            // Build posture is intentionally kept out of a root verdict.
             if (RaspRootAnalysis.propIndicatesInsecure(readProp("ro.secure"))) {
                 hits.add("ro_insecure")
             }
