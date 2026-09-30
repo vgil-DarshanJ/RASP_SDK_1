@@ -1,3 +1,9 @@
+# java.lang.invoke.StringConcatFactory is a JVM-only class used by the Kotlin
+# compiler for string template optimization at compile time but never actually
+# executed on Android (ART uses a different path). R8 warns about the reference
+# even though the code path that would call it is dead on Android.
+-dontwarn java.lang.invoke.StringConcatFactory
+
 # Play Integrity's response models are deserialized reflectively by
 # Google's own client library — required wherever the Phase 7 attestation
 # surface is included in a consuming app's release/R8-minified build.
