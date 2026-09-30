@@ -3,99 +3,79 @@ package com.shieldsdk.rasp
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
-public enum class CertificatePinCheckResult { MATCH, MISMATCH, NOT_ATTEMPTED }
+/** Result of a pin check. A transport failure is deliberately not a pass. */
+public enum class CertificatePinCheckResult { MATCH, MISMATCH, REVOKED, NOT_ATTEMPTED, INVALID_CONFIGURATION }
 
 /**
- * TLS certificate-pinning probe — the deferred half of MITM detection
- * (Phase 8). Verbatim-equivalent port of the Dart layer's
- * `SslPinningService.checkCertificatePin`/`isMitmDetected`'s pinning half,
- * using a permissive `TrustManager` that captures the presented
- * certificate without validating it (mirroring
- * `SecurityContext(withTrustedRoots: false)` +
- * `badCertificateCallback => false` there) — a certificate can be validly
- * issued by a trusted CA and still not be the pinned one (a compromised or
- * coerced CA, an enterprise MITM proxy with a real installed root); only
- * inspecting already-invalid certificates would miss exactly that case.
+ * SPKI (SubjectPublicKeyInfo) certificate pinning.
  *
- * ## Explicit configuration, no backend dependency
- *
- * Unlike the Dart side (which reads a pin baked in at compile time via
- * `String.fromEnvironment`), this native probe takes the pin and host as
- * plain parameters — matching the same "explicit configuration, never
- * magic" pattern [RaspShieldCore.configureExpectedSigningCertificate]
- * already established for repackaging detection. No pin configured means
- * [CertificatePinCheckResult.NOT_ATTEMPTED], never a silent pass.
+ * This probe keeps Android's normal trust-manager and hostname verification in
+ * place. It only inspects the peer certificate after a successful, ordinary
+ * TLS handshake; it never installs a permissive trust manager or an accepting
+ * hostname verifier. Pins use the standard `sha256/<base64>` representation.
  */
 public object RaspCertificatePinProbes {
+    public data class PinSet(
+        val current: Set<String>,
+        val backup: Set<String> = emptySet(),
+        val revoked: Set<String> = emptySet(),
+    ) {
+        fun isConfigured(): Boolean = current.isNotEmpty() || backup.isNotEmpty()
+    }
 
-    /**
-     * `pinnedSha256Hex` must be 64 lowercase hex characters (a raw SHA-256
-     * digest of the DER-encoded certificate) — malformed/blank input is
-     * treated identically to "not configured."
-     */
+    @JvmStatic
     fun checkCertificatePin(
         host: String?,
-        pinnedSha256Hex: String?,
+        pins: PinSet?,
         port: Int = 443,
-        timeoutMs: Int = 5000,
+        timeoutMs: Int = 5_000,
     ): CertificatePinCheckResult {
-        val pin = normalizePin(pinnedSha256Hex) ?: return CertificatePinCheckResult.NOT_ATTEMPTED
-        if (host.isNullOrBlank()) return CertificatePinCheckResult.NOT_ATTEMPTED
-
-        var presented: X509Certificate? = null
-        val capturingTrustManager = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-                presented = chain?.firstOrNull()
-                // Never trust at this layer — the pin comparison below
-                // decides. Intentionally does not throw, so the handshake
-                // completes far enough to capture the certificate.
-            }
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        if (host.isNullOrBlank() || pins == null || !pins.isConfigured() || timeoutMs <= 0) {
+            return CertificatePinCheckResult.INVALID_CONFIGURATION
+        }
+        val accepted = pins.current + pins.backup
+        if (accepted.any { !isPin(it) } || pins.revoked.any { !isPin(it) }) {
+            return CertificatePinCheckResult.INVALID_CONFIGURATION
         }
 
         var connection: HttpsURLConnection? = null
         return try {
-            val sslContext = SSLContext.getInstance("TLS")
-            sslContext.init(null, arrayOf<TrustManager>(capturingTrustManager), java.security.SecureRandom())
-
-            val url = java.net.URL("https://$host:$port/")
-            connection = (url.openConnection() as HttpsURLConnection).apply {
-                sslSocketFactory = sslContext.socketFactory
-                hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+            connection = (java.net.URL("https://$host:$port/").openConnection() as HttpsURLConnection).apply {
                 connectTimeout = timeoutMs
                 readTimeout = timeoutMs
-                requestMethod = "GET"
+                requestMethod = "HEAD"
+                instanceFollowRedirects = false
             }
-            try {
-                connection.connect()
-            } catch (e: Exception) {
-                // Connection/handshake failure before a certificate could
-                // be captured is reported the same as "not attempted" —
-                // never a false mismatch for an offline/unreachable host.
-                return CertificatePinCheckResult.NOT_ATTEMPTED
+            connection.connect()
+            val chain = connection.serverCertificates.filterIsInstance<X509Certificate>()
+            val observed = chain.map(::spkiPin).toSet()
+            when {
+                observed.any { it in pins.revoked } -> CertificatePinCheckResult.REVOKED
+                observed.any { it in accepted } -> CertificatePinCheckResult.MATCH
+                else -> CertificatePinCheckResult.MISMATCH
             }
-
-            val cert = presented ?: return CertificatePinCheckResult.NOT_ATTEMPTED
-            val observed = MessageDigest.getInstance("SHA-256")
-                .digest(cert.encoded)
-                .joinToString("") { "%02x".format(it) }
-
-            if (observed == pin) CertificatePinCheckResult.MATCH else CertificatePinCheckResult.MISMATCH
-        } catch (e: Exception) {
+        } catch (_: Exception) {
+            // Includes hostname, platform trust and network failures. None is
+            // proof of a clean transport, so callers map this to UNAVAILABLE.
             CertificatePinCheckResult.NOT_ATTEMPTED
         } finally {
             connection?.disconnect()
         }
     }
 
-    private fun normalizePin(raw: String?): String? {
-        val normalized = raw?.replace(":", "")?.replace(" ", "")?.lowercase()
-        if (normalized.isNullOrEmpty()) return null
-        return normalized.takeIf { Regex("^[0-9a-f]{64}$").matches(it) }
-    }
+    /** Backward-compatible convenience for a single SPKI pin. */
+    @JvmStatic
+    fun checkCertificatePin(host: String?, pin: String?, port: Int = 443, timeoutMs: Int = 5_000): CertificatePinCheckResult =
+        checkCertificatePin(host, pin?.let { PinSet(setOf(it)) }, port, timeoutMs)
+
+    @JvmStatic
+    fun spkiPin(certificate: X509Certificate): String =
+        "sha256/" + java.util.Base64.getEncoder().encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
+        )
+
+    private fun isPin(value: String): Boolean =
+        value.startsWith("sha256/") && value.length > "sha256/".length &&
+            runCatching { java.util.Base64.getDecoder().decode(value.removePrefix("sha256/")) }.isSuccess
 }
