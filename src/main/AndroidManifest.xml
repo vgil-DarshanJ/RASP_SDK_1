@@ -40,8 +40,6 @@
         <package android:name="com.chelpus.lackypatch"/>
         <package android:name="com.eltechs.axm"/>
         <package android:name="io.va.exposed"/>
-        <package android:name="com.sygic.aura"/>
-        <package android:name="org.adaway"/>
     </queries>
 
     <!-- INTERNET — Phase 8 only (RaspGeoIpProbes' IP-reputation lookup and
