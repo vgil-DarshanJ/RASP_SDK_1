@@ -41,6 +41,10 @@ plugins {
     `maven-publish`
 }
 
+group = "com.shieldsdk.rasp"
+// Override for a local integration build: -PraspEngineVersion=1.1.0-local
+version = providers.gradleProperty("raspEngineVersion").orElse("1.1.0-local").get()
+
 android {
     namespace = "com.shieldsdk.rasp"
     compileSdk = 35
@@ -48,6 +52,7 @@ android {
     defaultConfig {
         minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "RASP_ENGINE_VERSION", "\"${project.version}\"")
     }
 
     compileOptions {
@@ -57,6 +62,13 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "consumer-rules.pro")
+        }
     }
 
     // Publishes the "release" AAR variant as a Maven publication — this is
@@ -84,6 +96,8 @@ dependencies {
     // security property: a credential surviving app restart is stored
     // encrypted, tied to the device Keystore, not in a plain XML file.
     implementation("androidx.security:security-crypto:1.1.0")
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 afterEvaluate {
@@ -97,7 +111,7 @@ afterEvaluate {
                 // com.github.<owner>:<repo>:<tag> coordinate — JitPack maps
                 // the requested tag onto whatever this builds regardless of
                 // the literal string here.
-                version = "1.0.0"
+                version = project.version.toString()
             }
         }
     }
