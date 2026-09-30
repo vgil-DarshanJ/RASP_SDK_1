@@ -2,6 +2,9 @@
 .kotlin/
 build/
 local.properties
+.env
+*.jks
+*.keystore
 .idea/
 *.iml
 .DS_Store
