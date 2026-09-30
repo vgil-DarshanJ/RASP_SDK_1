@@ -43,19 +43,10 @@ public object RaspPrivacyScreenProbes {
      * visibility at all and is unaffected by this limitation — see
      * [overlayEvidence]'s two-signal design.
      */
-    fun isOverlayAttackDetected(context: Context): Boolean = try {
-        val pm = context.packageManager
-        val packages = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
-        packages.any { pkg ->
-            val permissions = pkg.requestedPermissions
-            permissions != null && permissions.contains(android.Manifest.permission.SYSTEM_ALERT_WINDOW) &&
-                !pkg.packageName.startsWith("com.android.") &&
-                !pkg.packageName.startsWith("com.google.android.") &&
-                pkg.packageName != context.packageName
-        }
-    } catch (e: Exception) {
-        false
-    }
+    fun isOverlayAttackDetected(context: Context): Boolean? =
+        // Permission possession is common and does not establish an active
+        // tapjacking attack. Only the runtime touch-obscured signal is used.
+        null
 
     /**
      * Two independent signals, matching the Dart side's `OverlayDetector`
@@ -99,9 +90,7 @@ public object RaspPrivacyScreenProbes {
         )
         enabledServices.any { service ->
             val pkgName = service.resolveInfo.serviceInfo.packageName
-            !pkgName.startsWith("com.android.") &&
-                !pkgName.startsWith("com.google.android.") &&
-                !pkgName.contains("talkback")
+            pkgName in RaspRiskyAppProbes.knownRiskyPackages
         }
     } catch (e: Exception) {
         null

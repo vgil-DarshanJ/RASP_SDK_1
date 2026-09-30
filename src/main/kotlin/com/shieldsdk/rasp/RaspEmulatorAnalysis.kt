@@ -93,7 +93,7 @@ object RaspEmulatorAnalysis {
     fun buildFingerprintIndicatesEmulator(p: BuildProfile): Boolean =
         p.fingerprint.startsWith("generic") || p.fingerprint.contains("vbox") ||
             p.fingerprint.contains("emulator") || p.fingerprint.contains("sdk_gphone") ||
-            p.fingerprint.contains("unknown")
+            false
 
     fun buildModelIndicatesEmulator(p: BuildProfile): Boolean =
         p.model.contains("google_sdk") || p.model.contains("emulator") ||
@@ -116,7 +116,7 @@ object RaspEmulatorAnalysis {
             p.hardware.contains("ldplayer")
 
     fun buildManufacturerIndicatesEmulator(p: BuildProfile): Boolean =
-        p.manufacturer.contains("genymotion") || p.manufacturer.contains("unknown")
+        p.manufacturer.contains("genymotion")
 
     fun buildBrandDeviceIndicatesEmulator(p: BuildProfile): Boolean =
         p.brand.startsWith("generic") && p.device.startsWith("generic")

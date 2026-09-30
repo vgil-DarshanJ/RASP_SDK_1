@@ -36,7 +36,9 @@ public object RaspKeystoreProbes {
      * binding is genuinely fine — so [RaspShieldCore]'s facade never has to
      * carry that inverted-boolean landmine forward into a new API surface.
      */
-    fun isDeviceBindingIntact(): Boolean {
+    enum class DeviceBindingState { INTACT, PROVISIONED_NOW, UNAVAILABLE }
+
+    fun deviceBindingState(): DeviceBindingState {
         // Block body (not an expression body) specifically because of the
         // early `return true` below — a non-local return from inside an
         // expression-bodied function's try-block is invalid Kotlin per the
@@ -52,15 +54,19 @@ public object RaspKeystoreProbes {
                 // binding is now intact — matches the original's "return
                 // false" (= binding not-failed) branch immediately after
                 // provisioning, just expressed in the corrected polarity.
-                return true
+                return DeviceBindingState.PROVISIONED_NOW
             }
-            keyStore.getEntry(KEY_ALIAS, null) != null
+            if (keyStore.getEntry(KEY_ALIAS, null) != null) DeviceBindingState.INTACT
+            else DeviceBindingState.UNAVAILABLE
         } catch (e: Exception) {
             // Original polarity: any exception here means binding could not be
             // established/verified, i.e. NOT intact.
-            false
+            DeviceBindingState.UNAVAILABLE
         }
     }
+
+    /** Retained for binary/source compatibility; use [deviceBindingState]. */
+    fun isDeviceBindingIntact(): Boolean = deviceBindingState() == DeviceBindingState.INTACT
 
     private fun generateBindingKey() {
         val kpg = KeyPairGenerator.getInstance(
