@@ -65,7 +65,8 @@ public object RaspEventShipper {
     /** SDK-wide version string, stamped onto every shipped event's
      *  `sdkVersion` field — the platform dashboard's version column reads
      *  this to tell an old integration apart from a current one. */
-    public const val SDK_VERSION: String = "1.0.0"
+    /** Build-generated from the one Gradle publication version. */
+    @JvmField public val SDK_VERSION: String = BuildConfig.RASP_ENGINE_VERSION
 
     @Volatile
     private var credential: RaspEventCredential? = null
