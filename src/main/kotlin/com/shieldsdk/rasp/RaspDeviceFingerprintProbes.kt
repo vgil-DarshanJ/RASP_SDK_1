@@ -22,10 +22,10 @@ public object RaspDeviceFingerprintProbes {
         val board: String,
         val hardware: String,
         val buildFingerprint: String,
-        val screenLockEnabled: Boolean,
+        val screenLockEnabled: Boolean?,
         val adbEnabled: Boolean,
         val installSource: String,
-        val selinuxEnforcing: Boolean,
+        val selinuxEnforcing: Boolean?,
     )
 
     /**
@@ -44,7 +44,7 @@ public object RaspDeviceFingerprintProbes {
             val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             km.isDeviceSecure
         } catch (e: Exception) {
-            false
+            null
         }
 
         val adbEnabled = try {
@@ -88,17 +88,24 @@ public object RaspDeviceFingerprintProbes {
      * "assume enforcing," the conservative/secure default) if neither
      * source answers — unchanged from the original's fallback chain.
      */
-    private fun isSELinuxEnforcing(): Boolean {
+    fun isSELinuxEnforcing(): Boolean? {
         val execLine = RaspProcessUtils.firstLineOf(arrayOf("getenforce"))
-        if (execLine != null) {
-            return execLine.trim().lowercase() == "enforcing"
-        }
-        return try {
+        parseSelinuxValue(execLine)?.let { return it }
+        val fileValue = try {
             val file = java.io.File("/sys/fs/selinux/enforce")
-            if (file.exists()) file.readText().trim() == "1" else true
-        } catch (e: Exception) {
-            true
+            if (file.isFile) file.readText() else null
+        } catch (_: Exception) {
+            null
         }
+        return parseSelinuxValue(fileValue)
+    }
+
+    /** A denied or malformed SELinux read is UNKNOWN, never "enforcing". */
+    @JvmStatic
+    fun parseSelinuxValue(value: String?): Boolean? = when (value?.trim()?.lowercase()) {
+        "enforcing", "1" -> true
+        "permissive", "0" -> false
+        else -> null
     }
 
     /** `null` means the keyguard service could not be queried; never treat that as clean. */

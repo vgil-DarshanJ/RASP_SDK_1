@@ -245,6 +245,14 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
             }
         } catch (e: Exception) { /* Build unavailable */ }
         try {
+            if (RaspRootAnalysis.tagsIndicateTestKeys(Build.TAGS)) hits.add("test_keys")
+        } catch (e: Exception) { /* Build tags unavailable */ }
+        try {
+            if (RaspRootAnalysis.propIndicatesDebuggable(readProp("ro.debuggable"))) {
+                hits.add("ro_debuggable")
+            }
+        } catch (e: Exception) { /* Property unavailable */ }
+        try {
             val debuggable = (context.applicationInfo.flags and
                 android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
             if (debuggable) hits.add("app_debuggable")

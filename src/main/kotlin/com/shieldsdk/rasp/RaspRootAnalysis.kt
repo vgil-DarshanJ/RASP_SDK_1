@@ -176,7 +176,9 @@ object RaspRootAnalysis {
      * Posture signals, reported separately from [allSignalIds] so they can
      * never reach the root verdict.
      */
-    val posturesSignalIds: List<String> = listOf("build_type_non_retail", "app_debuggable")
+    val posturesSignalIds: List<String> = listOf(
+        "build_type_non_retail", "test_keys", "ro_debuggable", "app_debuggable",
+    )
 
     // ── Filesystem / partition state ──────────────────────────────────────
 
@@ -353,7 +355,7 @@ object RaspRootAnalysis {
      */
     val allSignalIds: List<String> = listOf(
         "su_binary", "magisk_artifact", "su_on_path", "root_manager_app",
-        "root_cloaking_app", "test_keys", "ro_debuggable", "ro_insecure",
-        "system_writable", "busybox", "mount_namespace",
+        "root_cloaking_app", "ro_insecure", "system_writable", "busybox",
+        "mount_namespace",
     )
 }
