@@ -644,24 +644,20 @@ object RaspShieldCore {
 
     /**
      * `screenGuard` is optional — pass the [RaspScreenGuard] instance your
-     * Activity has attached (if any) to include its runtime
-     * touch-obscured corroboration. Without one, only the static
-     * permission-holder signal is evaluated — see
-     * [RaspPrivacyScreenProbes.isOverlayAttackDetected]'s doc for that
-     * signal's own disclosed API 30+ limitation.
+     * Activity has attached (if any) to include its runtime touch-obscured
+     * signal. Permission holders are retained as audit evidence only; without
+     * an observed touch result the verdict is UNKNOWN, never DETECTED.
      */
     fun checkOverlayBlocking(context: Context, screenGuard: RaspScreenGuard? = null): RaspCheckResult =
         runGuarded("overlay") {
             val signals = RaspPrivacyScreenProbes.overlayEvidence(context, screenGuard)
             val evidence = signals.map { RaspEvidence("overlay_${it.signal}", it.detected) }
-            val anyDetected = signals.any { it.detected }
-            val anyConclusiveClean = signals.any { it.conclusive && !it.detected }
-            when {
-                anyDetected -> RaspCheckResult.detected("overlay", evidence)
-                anyConclusiveClean -> RaspCheckResult.secure("overlay", evidence)
+            when (RaspPrivacyScreenProbes.classifyOverlaySignals(signals)) {
+                RaspCheckStatus.DETECTED -> RaspCheckResult.detected("overlay", evidence)
+                RaspCheckStatus.SECURE -> RaspCheckResult.secure("overlay", evidence)
                 else -> RaspCheckResult(
                     "overlay", RaspCheckStatus.UNKNOWN, evidence,
-                    reason = "No overlay signal reached a conclusive verdict"
+                    reason = "No touch-obscured signal reached a conclusive verdict"
                 )
             }
         }
