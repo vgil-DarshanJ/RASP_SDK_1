@@ -5,7 +5,7 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
+import java.security.SecureRandom
 import android.util.Base64
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -30,7 +30,7 @@ import java.security.spec.X509EncodedKeySpec
  *   used by `RaspKeystoreProbes` so the two key hierarchies never collide.
  *
  * ## Lifecycle
- * - First call to [getOrCreate] generates the key (may take 100-500ms on
+ * - First call to [ensureKey] (or any export/sign call) generates the key (may take 100-500ms on
  *   first run — call off the main thread).
  * - Subsequent calls return the existing key instantly.
  * - Key survives app updates/uninstalls **only if** the app is signed with
@@ -41,7 +41,8 @@ import java.security.spec.X509EncodedKeySpec
  * ## Usage
  * ```kotlin
  * val keyManager = RaspDeviceKey(context)
- * val publicKeyB64 = keyManager.getPublicKeyBase64() // for backend registration
+ * val publicKeyB64 = keyManager.exportPublicKeyBase64()          // POST /v1/devices/register
+ * val chain = keyManager.exportAttestationChainBase64()            // same request
  * val signature = keyManager.sign(payloadBytes)       // for evidence envelopes
  * ```
  */
@@ -75,19 +76,81 @@ public class RaspDeviceKey(private val context: Context) {
      * Returns `null` if the key is unavailable or signing fails.
      * Never throws — failures are logged via [RaspShieldCore.logger].
      */
-    open fun sign(payload: ByteArray): String? {
+    open fun sign(payload: ByteArray): String? =
+        signDer(payload)?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
+
+    /** SHA256withECDSA over [payload], DER-encoded. Creates the key if missing. */
+    public fun signDer(payload: ByteArray): ByteArray? {
         return try {
+            if (!ensureKey()) return null
             val entry = keyStore.getEntry(KEY_ALIAS, null) as? java.security.KeyStore.PrivateKeyEntry
-                ?: return generateKeyPair().let { sign(payload) }
-            val privateKey = entry.privateKey as ECPrivateKey
+                ?: return null
             val signature = Signature.getInstance(SIGNATURE_ALGORITHM)
-            signature.initSign(privateKey)
+            signature.initSign(entry.privateKey)
             signature.update(payload)
-            Base64.encodeToString(signature.sign(), Base64.NO_WRAP)
+            signature.sign()
         } catch (e: Exception) {
             notifyLogger("device_key", e)
             null
         }
+    }
+
+    /**
+     * Creates the key if it does not exist yet. Returns `true` when a key
+     * exists afterwards.
+     *
+     * [attestationChallenge] is embedded in the key's attestation certificate
+     * (API 24+). It only affects a key created by this call — an existing key
+     * keeps the challenge (or lack of one) it was created with. For the
+     * backend to treat the attestation as fresh, pass a challenge it issued;
+     * without one, 32 random local bytes are used, which yields an attestation
+     * chain but proves nothing about freshness.
+     */
+    public fun ensureKey(attestationChallenge: ByteArray? = null): Boolean {
+        return try {
+            if (keyStore.containsAlias(KEY_ALIAS)) return true
+            generateKeyPair(attestationChallenge ?: ByteArray(32).also { SecureRandom().nextBytes(it) })
+            keyStore.containsAlias(KEY_ALIAS)
+        } catch (e: Exception) {
+            notifyLogger("device_key", e)
+            false
+        }
+    }
+
+    /**
+     * Base64 (standard, no line breaks) X.509 SPKI of the device key, for
+     * `POST /v1/devices/register`. Creates the key if missing.
+     */
+    public fun exportPublicKeyBase64(): String? =
+        exportPublicKeySpki()?.let { RaspBase64.encode(it) }
+
+    /** DER X.509 SPKI of the device key. Creates the key if missing. */
+    public fun exportPublicKeySpki(): ByteArray? =
+        if (ensureKey()) getPublicKey()?.encoded else null
+
+    /**
+     * The key's certificate chain, leaf first, each certificate Base64 DER,
+     * for `POST /v1/devices/register`. Creates the key if missing.
+     *
+     * With hardware attestation the leaf carries the Android key-attestation
+     * extension and the chain ends at a Google attestation root. A key created
+     * without attestation (API 23, or a key made by an earlier SDK build) has
+     * a single self-signed certificate; the backend must treat that as
+     * "not attested", not as a failure to parse.
+     */
+    public fun exportAttestationChainBase64(): List<String>? =
+        if (ensureKey()) getAttestationCertificateChain()?.let { chain ->
+            chain.map { RaspBase64.encode(Base64.decode(it, Base64.NO_WRAP)) }
+        } else null
+
+    /** Base64(SHA-256(SPKI)) — the id the backend stores this key under. */
+    public fun deviceKeyId(): String? =
+        exportPublicKeySpki()?.let { RaspEvidenceEnvelope.deviceKeyId(it) }
+
+    /** This key as the signer for [RaspEvidenceEnvelope]. */
+    public fun asEnvelopeSigner(): RaspEnvelopeSigner = object : RaspEnvelopeSigner {
+        override fun publicKeySpki(): ByteArray? = exportPublicKeySpki()
+        override fun signDer(payload: ByteArray): ByteArray? = this@RaspDeviceKey.signDer(payload)
     }
 
     /**
@@ -155,49 +218,44 @@ public class RaspDeviceKey(private val context: Context) {
         }
     }
 
-    /** Generates a new EC P-256 key pair in Keystore (StrongBox preferred). */
-    private fun generateKeyPair(): KeyPairGenerator {
-        val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEY_STORE)
-        val builder = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            KeyProperties.PURPOSE_SIGN
-        ).run {
-            setDigests(KeyProperties.DIGEST_SHA256)
-            setAlgorithmParameterSpec(ECGenParameterSpec(EC_CURVE))
-            // Non-exportable by default — no setUserAuthenticationRequired needed
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                // Try StrongBox first; if unavailable, the generateKeyPair() call
-                // will throw StrongBoxUnavailableException and we fall back below.
-                try {
-                    setIsStrongBoxBacked(true)
-                } catch (_: StrongBoxUnavailableException) {
-                    // Will retry without StrongBox in the catch block below
-                }
-            }
-            build()
+    /**
+     * Generates a new EC P-256 key pair in Keystore. Tries, in order:
+     * StrongBox + attestation, TEE + attestation, TEE without attestation.
+     * Each failed attempt (StrongBox absent, attestation unsupported on some
+     * API 24–25 devices) falls through to the next; the last failure is thrown.
+     */
+    private fun generateKeyPair(attestationChallenge: ByteArray) {
+        val attempts = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(true to true)
+            add(false to true)
+            add(false to false)
         }
-
-        return try {
-            kpg.initialize(builder)
-            kpg.generateKeyPair()
-            kpg
-        } catch (e: StrongBoxUnavailableException) {
-            // StrongBox not available — retry with TEE
-            val fallbackBuilder = KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_SIGN
-            ).run {
-                setDigests(KeyProperties.DIGEST_SHA256)
-                setAlgorithmParameterSpec(ECGenParameterSpec(EC_CURVE))
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    setIsStrongBoxBacked(false)
+        var lastError: Exception? = null
+        for ((strongBox, attest) in attempts) {
+            try {
+                val spec = KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_SIGN).run {
+                    setDigests(KeyProperties.DIGEST_SHA256)
+                    setAlgorithmParameterSpec(ECGenParameterSpec(EC_CURVE))
+                    if (attest && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        setAttestationChallenge(attestationChallenge)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) setIsStrongBoxBacked(strongBox)
+                    build()
                 }
-                build()
+                KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEY_STORE).run {
+                    initialize(spec)
+                    generateKeyPair()
+                }
+                return
+            } catch (e: Exception) {
+                // ProviderException (incl. StrongBoxUnavailableException, API 28+) or
+                // InvalidAlgorithmParameterException; caught as Exception so no API-28
+                // class is referenced in a catch clause on API 23–27.
+                lastError = e
+                try { keyStore.deleteEntry(KEY_ALIAS) } catch (_: Exception) { }
             }
-            kpg.initialize(fallbackBuilder)
-            kpg.generateKeyPair()
-            kpg
         }
+        throw lastError ?: IllegalStateException("device key generation failed")
     }
 
     /** Checks if the existing key is inside StrongBox (API 28+). */
