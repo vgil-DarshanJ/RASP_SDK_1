@@ -49,10 +49,29 @@ android {
     namespace = "com.shieldsdk.rasp"
     compileSdk = 35
 
+    // Native library (src/main/cpp): pinned NDK and CMake so builds are
+    // reproducible; ABIs per Task 4 (no 32-bit x86).
+    ndkVersion = "27.1.12297006"
+
     defaultConfig {
         minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
         buildConfigField("String", "RASP_ENGINE_VERSION", "\"${project.version}\"")
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_static")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     compileOptions {
