@@ -35,3 +35,11 @@
 -keep class com.shieldsdk.rasp.RaspHookAnalysis {
     boolean hookVerdict(java.util.List);
 }
+
+# libraspshield.so registers its methods with RegisterNatives on this class
+# by name (jni_entry.cpp): the class name and its native method names must
+# survive the host app's R8 run, or the library fails to load and the engine
+# silently uses its Kotlin fallbacks.
+-keep class com.shieldsdk.rasp.RaspNative {
+    native <methods>;
+}
