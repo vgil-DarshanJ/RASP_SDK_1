@@ -6,8 +6,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Unit tests for [RaspEvidenceEnvelope] - constants and basic structure.
- * Canonicalization logic tested via reflection in integration tests.
+ * Unit tests for [RaspEvidenceEnvelope] - envelope structure, constants.
+ *
+ * ## Test component usage:
+ * - Tests REAL RaspEvidenceEnvelope constants
+ * - No external mocking frameworks used
  */
 class RaspEvidenceEnvelopeTest {
 
@@ -19,10 +22,17 @@ class RaspEvidenceEnvelopeTest {
     }
 
     @Test
-    fun `envelope builds valid JSON structure`() {
-        // Just verify the constants exist and have correct types
-        assertTrue(RaspEvidenceEnvelope.ENVELOPE_VERSION > 0)
-        assertTrue(RaspEvidenceEnvelope.SIGNATURE_ALGORITHM.isNotEmpty())
-        assertTrue(RaspEvidenceEnvelope.NONCE_BYTES > 0)
+    fun `signature algorithm is ES256`() {
+        assertEquals("ES256", RaspEvidenceEnvelope.SIGNATURE_ALGORITHM)
+    }
+
+    @Test
+    fun `envelope version is 1`() {
+        assertEquals(1, RaspEvidenceEnvelope.ENVELOPE_VERSION)
+    }
+
+    @Test
+    fun `nonce bytes is 16`() {
+        assertEquals(16, RaspEvidenceEnvelope.NONCE_BYTES)
     }
 }

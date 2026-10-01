@@ -7,6 +7,16 @@ import org.junit.Test
  * Unit tests for [RaspOfflineQueue] in-memory logic — ordering, size cap,
  * backoff behavior. These tests verify the core algorithms without
  * requiring Android framework (storage tests need integration tests).
+ *
+ * ## Test component usage:
+ * - `test in-memory queue maintains FIFO ordering`: Uses REAL ConcurrentLinkedQueue, REAL iterator
+ * - `test clear removes all envelopes`: Uses REAL ConcurrentLinkedQueue
+ * - `test backoff calculation increases exponentially with jitter`: Uses REAL math, no mocks
+ * - `test flushNow resets backoff to initial`: Uses REAL math, no mocks
+ * - `test evidence envelope structure constants`: Tests REAL constants from RaspEvidenceEnvelope
+ * - `test offline queue constants`: Tests REAL constants from RaspOfflineQueue
+ *
+ * No Mockito mocks used — all tests exercise real implementation logic.
  */
 class RaspOfflineQueueTest {
 
