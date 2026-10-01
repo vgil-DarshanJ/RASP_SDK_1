@@ -14,62 +14,54 @@ import java.time.Instant
 import java.util.concurrent.Executors
 
 /**
- * Ships [RaspCheckResult]s to the RASP Shield platform's ingestion API
- * (`POST <ingestion_url>`, see `FROUNTEND_BACKEND_RASPOWN/BE/src/ingestion/routes.ts`)
- * — the audit-trail pipeline the platform's dashboard reads from.
+ * Ships [RaspCheckResult]s to the RASP Shield platform's ingestion API.
  *
- * ## Every request is HMAC-signed, not just key-authenticated
+ * ## Two signing paths (configurable via [useEvidenceEnvelope])
  *
- * Earlier versions of this class sent only `X-Api-Key` — a leaked key
- * alone was then sufficient to post events as this application, forever,
- * until someone noticed and revoked it. Every request now also carries
- * `X-Timestamp` and `X-Signature` (HMAC-SHA256 over
- * `"<timestamp>.<raw body>"`, keyed by the credential's `apiSecret` — see
- * [RaspHmacSigner]). The backend recomputes and compares this, rejects
- * stale timestamps, and rejects a replayed exact signature even within
- * the freshness window (see `middleware/apiKey.ts` +
- * `redis/replayGuard.ts`). A captured `X-Api-Key` alone can no longer
- * forge or replay a request.
+ * ### Legacy HMAC path (default, backward compatible)
+ * - Request carries `X-Api-Key`, `X-Timestamp`, `X-Signature` (HMAC-SHA256)
+ * - Signature keyed by credential's `apiSecret` — see [RaspHmacSigner]
+ * - Backend validates via shared secret
+ * - Works with existing backend ingestion endpoint
  *
- * ## "Never disturb the app" — the actual contract, not just a claim
+ * ### New Evidence Envelope path (opt-in via [setUseEvidenceEnvelope(true)])
+ * - Each batch wrapped in a [RaspEvidenceEnvelope] signed by the
+ *   per-install hardware-backed EC P-256 device key ([RaspDeviceKey])
+ * - Envelope includes: eventId, eventTime, monotonicCounter, nonce,
+ *   sdkVersion, appId, deviceKeyId, detectorResults, ECDSA signature
+ * - Backend validates via registered device public key (no shared secret)
+ * - Provides tamper evidence, replay protection, device binding
  *
- * [shipAsync] runs entirely on its own single-thread executor, separate
- * from [RaspShieldCore]'s detector-scan executor so a slow network call
- * here can never delay a security scan or vice versa. It never throws
- * back to the caller — a network failure, a malformed response, a
- * misconfigured credential all resolve to a logged (via
- * [RaspShieldCore.logger]) no-op. There is no retry queue in this version
- * (a dropped batch on a flaky network is simply gone) — see the class doc
- * of `FROUNTEND_BACKEND_RASPOWN`'s ingestion route for why that is an
- * accepted trade-off for v1 rather than an oversight: a banking app's
- * runtime behavior must never depend on telemetry delivery succeeding.
+ * ## Offline durability
+ * - When network is unavailable, envelopes are queued in
+ *   [RaspOfflineQueue] (AES-256-GCM encrypted, Keystore-wrapped key)
+ * - FIFO ordering, size cap (1000), exponential backoff retry
+ * - Events persist across process restarts — never lost on crash
  *
- * ## Usage
- *
- * ```kotlin
- * val credentialJson = File(credentialFilePath).readText() // however your app got it
- * RaspEventShipper.configure(credentialJson)
- *
- * val results = RaspShieldCore.scanAllBlocking(context)
- * RaspEventShipper.shipAsync(context, results)
- * ```
- *
- * Configuration is a plain, explicit method call — this SDK never fetches
- * or generates its own credential, matching the same
- * "explicit-configuration-not-magic" pattern already established by
- * [RaspShieldCore.configureExpectedSigningCertificate]/
- * [RaspShieldCore.configureCertificatePin].
+ * ## "Never disturb the app"
+ * - All I/O on dedicated single-thread executors
+ * - Never throws to caller — failures logged via [RaspShieldCore.logger]
+ * - Network failures trigger queueing, not data loss
  */
 public object RaspEventShipper {
 
-    /** SDK-wide version string, stamped onto every shipped event's
-     *  `sdkVersion` field — the platform dashboard's version column reads
-     *  this to tell an old integration apart from a current one. */
-    /** Build-generated from the one Gradle publication version. */
+    /** SDK-wide version string from Gradle publication. */
     @JvmField public val SDK_VERSION: String = BuildConfig.RASP_ENGINE_VERSION
 
     @Volatile
     private var credential: RaspEventCredential? = null
+
+    /** When `true`, use the new Evidence Envelope + device key signing path. */
+    @Volatile
+    private var useEvidenceEnvelope = false
+
+    /** Per-process device key (lazy, created on first use). */
+    @Volatile
+    private var deviceKey: RaspDeviceKey? = null
+
+    /** Per-process offline queue (lazy, created on first use). */
+    @Volatile
+    private var offlineQueue: RaspOfflineQueue? = null
 
     /** `true` when the JSON parsed successfully and shipping is possible. */
     public fun configure(credentialJson: String): Boolean {
@@ -78,17 +70,19 @@ public object RaspEventShipper {
         return parsed != null
     }
 
+    /** Enables the new Evidence Envelope signing path (opt-in). */
+    public fun setUseEvidenceEnvelope(enabled: Boolean) {
+        useEvidenceEnvelope = enabled
+    }
+
+    /** Returns whether the new Evidence Envelope path is active. */
+    public fun isUsingEvidenceEnvelope(): Boolean = useEvidenceEnvelope
+
     public fun isConfigured(): Boolean = credential != null
 
     private const val PREFS_FILE = "rasp_shield_secure_prefs"
     private const val PREFS_KEY = "rasp_shield_ingestion_credential"
 
-    /** Keystore-backed, not a plain XML file — this does not defeat a
-     *  rooted device running Frida at runtime (nothing client-side can),
-     *  but it stops the credential from sitting in a trivially-grepped
-     *  plaintext SharedPreferences file or an adb backup. Built fresh
-     *  per-call rather than cached: [MasterKey] is cheap to construct and
-     *  this avoids holding a `Context` reference longer than one call. */
     private fun securePrefs(context: Context) = EncryptedSharedPreferences.create(
         context.applicationContext ?: context,
         PREFS_FILE,
@@ -99,12 +93,6 @@ public object RaspEventShipper {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
-    /** Same as [configure], and also persists [credentialJson] to
-     *  encrypted storage (see [securePrefs]'s doc) so a later [restore]
-     *  call — e.g. on the next app launch — can recover it without asking
-     *  the user to paste it again. Returns `false` (and does not persist
-     *  anything) on the same malformed-JSON condition [configure] already
-     *  reports `false` for. */
     public fun configureAndPersist(context: Context, credentialJson: String): Boolean {
         val ok = configure(credentialJson)
         if (ok) {
@@ -120,12 +108,6 @@ public object RaspEventShipper {
         return ok
     }
 
-    /** Loads a credential previously saved by [configureAndPersist], if
-     *  any. Returns `true` only if one was found and parsed successfully
-     *  — `false` covers both "nothing was ever persisted" and "what was
-     *  persisted no longer parses" equally honestly; either way,
-     *  [isConfigured] remains whatever it already was (never downgraded
-     *  by a failed restore). */
     public fun restore(context: Context): Boolean {
         return try {
             val stored = securePrefs(context).getString(PREFS_KEY, null)
@@ -136,8 +118,6 @@ public object RaspEventShipper {
         }
     }
 
-    /** Deletes any persisted credential (e.g. on user logout/sign-out) and
-     *  clears the in-memory one. Idempotent, never throws. */
     public fun clearPersisted(context: Context) {
         credential = null
         try {
@@ -147,10 +127,11 @@ public object RaspEventShipper {
         }
     }
 
-    /** Test-only reset — mirrors `RaspKeystoreProbes`/similar test seams
-     *  elsewhere in this SDK. */
     public fun resetForTests() {
         credential = null
+        deviceKey = null
+        offlineQueue = null
+        useEvidenceEnvelope = false
     }
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -159,14 +140,11 @@ public object RaspEventShipper {
 
     private const val CONNECT_TIMEOUT_MS = 8000
     private const val READ_TIMEOUT_MS = 8000
-    private const val MAX_BATCH_SIZE = 200 // matches the backend's own batchSchema cap
+    private const val MAX_BATCH_SIZE = 200
 
     /**
-     * Fire-and-forget: batches [results] (chunked at [MAX_BATCH_SIZE], the
-     * backend's own accepted-batch limit) and POSTs each chunk on the
-     * background executor. Returns immediately — never blocks the caller,
-     * regardless of network state. A no-op (logged, not thrown) when
-     * [configure] was never called or failed to parse.
+     * Fire-and-forget: batches [results], builds envelopes (if enabled),
+     * and ships or queues them. Returns immediately.
      */
     public fun shipAsync(context: Context, results: List<RaspCheckResult>) {
         val cred = credential
@@ -177,12 +155,60 @@ public object RaspEventShipper {
         if (results.isEmpty()) return
 
         val appContext = context.applicationContext ?: context
+
+        if (useEvidenceEnvelope) {
+            shipWithEvidenceEnvelopes(appContext, cred, results)
+        } else {
+            shipLegacyHmac(appContext, cred, results)
+        }
+    }
+
+    /** New path: Evidence Envelope + device key + offline queue. */
+    private fun shipWithEvidenceEnvelopes(
+        appContext: Context,
+        credential: RaspEventCredential,
+        results: List<RaspCheckResult>,
+    ) {
+        val key = deviceKey ?: RaspDeviceKey(appContext).also { deviceKey = it }
+        val queue = offlineQueue ?: RaspOfflineQueue(appContext).also { offlineQueue = it }
+        val envelopeBuilder = RaspEvidenceEnvelope()
+
+        // Ensure queue is reloaded from storage on first use
+        queue.reloadFromStorage()
+
+        // Start flusher if not already running
+        queue.startFlusher { envelopeJson ->
+            postEnvelope(credential, envelopeJson)
+        }
+
+        results.chunked(MAX_BATCH_SIZE).forEach { chunk ->
+            executor.execute {
+                try {
+                    val envelopeJson = envelopeBuilder.buildEnvelope(appContext, key, chunk)
+                    envelopeJson?.let { envelope ->
+                        if (!queue.enqueue(envelope)) {
+                            notifyLoggerOnly("event_shipper", "Offline queue full, dropping envelope")
+                        }
+                    }
+                } catch (e: Exception) {
+                    notifyLoggerOnly("event_shipper", "Envelope build failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** Legacy path: HMAC-signed batch POST (unchanged behavior). */
+    private fun shipLegacyHmac(
+        appContext: Context,
+        credential: RaspEventCredential,
+        results: List<RaspCheckResult>,
+    ) {
         val deviceInfo = collectDeviceInfo(appContext)
 
         results.chunked(MAX_BATCH_SIZE).forEach { chunk ->
             executor.execute {
                 try {
-                    postBatch(cred, chunk, deviceInfo)
+                    postBatch(credential, chunk, deviceInfo)
                 } catch (e: Exception) {
                     notifyLoggerOnly("event_shipper", e.message ?: "Unknown shipping failure")
                 }
@@ -190,12 +216,45 @@ public object RaspEventShipper {
         }
     }
 
+    /** Posts a single Evidence Envelope to the ingestion endpoint. */
+    private fun postEnvelope(credential: RaspEventCredential, envelopeJson: String): Boolean {
+        val bodyBytes = envelopeJson.toByteArray(Charsets.UTF_8)
+        // Evidence Envelope path: no X-Timestamp, no X-Signature (HMAC).
+        // The envelope itself carries its own ECDSA signature + monotonic counter + nonce.
+        // Backend identifies this path by the presence of "envelopeVersion" in the body.
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(credential.ingestionUrl)
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("X-Api-Key", credential.apiKey)
+                // No X-Timestamp, no X-Signature — envelope is self-authenticating
+            }
+            connection.outputStream.use { it.write(bodyBytes) }
+
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                notifyLoggerOnly("event_shipper", "Envelope ingestion returned HTTP $code")
+                return false
+            }
+            return true
+        } catch (e: Exception) {
+            notifyLoggerOnly("event_shipper", "Envelope post failed: ${e.message}")
+            return false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun notifyLoggerOnly(detectorId: String, reason: String) {
         try {
             RaspShieldCore.logger.onDetectorError(detectorId, IllegalStateException(reason))
         } catch (e: Exception) {
-            // The logger itself must never propagate a failure — same rule
-            // as RaspShieldCore.notifyLogger.
+            // Logger must never propagate
         }
     }
 
@@ -229,6 +288,7 @@ public object RaspEventShipper {
         )
     }
 
+    /** Legacy HMAC batch post — unchanged from original implementation. */
     private fun postBatch(
         credential: RaspEventCredential,
         batch: List<RaspCheckResult>,
@@ -259,11 +319,6 @@ public object RaspEventShipper {
                 put("observedAt", Instant.ofEpochMilli(result.observedAtMillis).toString())
             })
         }
-        // The exact bytes below are what gets signed AND what gets sent —
-        // never re-serialized in between, since that could produce
-        // different bytes (whitespace/key order) than what was signed,
-        // which would make the server's independently-recomputed
-        // signature fail to match through no fault of an attacker.
         val bodyBytes = JSONObject().apply { put("events", eventsArray) }.toString()
             .toByteArray(Charsets.UTF_8)
         val timestamp = System.currentTimeMillis().toString()
