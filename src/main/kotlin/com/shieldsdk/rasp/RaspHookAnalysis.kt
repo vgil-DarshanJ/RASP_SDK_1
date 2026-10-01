@@ -65,8 +65,11 @@ object RaspHookAnalysis {
         "/tmp/", "/cache/",
     )
 
-    /** Signals that are individually explainable and must not convict alone. */
-    val softHookSignals: Set<String> = setOf("hook_rwx_mapping", "hook_suspicious_lib_path")
+    /** Hard signal: known hooking library found in maps (individually conclusive). */
+    val hardHookSignals: Set<String> = setOf("hook_framework_lib")
+
+    /** Soft signals: need corroboration (two required for verdict). */
+    val softHookSignals: Set<String> = setOf("hook_rwx_mapping", "hook_suspicious_lib_path", "hook_native_method")
 
     /** `true` when a mapped region names a known hooking framework. */
     fun mapsIndicateHookFramework(mapsContent: String): Boolean {
@@ -134,37 +137,51 @@ object RaspHookAnalysis {
     const val RWX_MAPPING_THRESHOLD: Int = 12
 
     /**
-     * The hook verdict: at least TWO independent signals required.
+     * The hook verdict: one HARD signal OR two SOFT signals.
      *
-     * Changed from "one hard OR two soft" to "at least two signals from
-     * independent families" to prevent false positives from:
-     * - RWX mapping threshold (12) firing on JIT-heavy processes
-     * - Reflection check on SDK's own methods firing on obfuscated/ART-optimized builds
-     * - Single soft signals (suspicious path, RWX) having innocent explanations
+     * Hard signal (individually conclusive): hook_framework_lib (known hooking library in maps)
+     * Soft signals (need corroboration): hook_rwx_mapping, hook_suspicious_lib_path, hook_native_method
+     *
+     * This prevents false positives from:
+     * - RWX mapping threshold (12) firing on JIT-heavy processes (soft, needs corroboration)
+     * - Reflection check on SDK's own methods firing on obfuscated/ART-optimized builds (soft, needs corroboration)
+     * - Single soft signals having innocent explanations
      *
      * Families are independent by construction — see class doc table.
-     * A single `hook_native_method` is no longer sufficient; it needs corroboration.
+     * Counts DISTINCT signal types, not total occurrences.
      */
     fun hookVerdict(signals: List<String>): Boolean {
-        // Count unique signal families (each distinct signal = one family)
-        val uniqueFamilies = signals.distinct().size
-        return uniqueFamilies >= 2
+        val distinctSignals = signals.distinct()
+        val hardSignals = distinctSignals.count { it in hardHookSignals }
+        val softSignals = distinctSignals.count { it in softHookSignals }
+        return hardSignals >= 1 || softSignals >= 2
     }
 
     /**
      * Severity for a set of hook signals, as the SDK's shared vocabulary.
      *
-     * With the new 2-signal minimum, severity reflects corroboration level:
-     * - critical: hook_native_method + at least one other signal
-     * - high: hook_framework_lib + at least one other signal
-     * - medium: any two corroborating signals (including two soft)
-     * - none: fewer than two signals
+     * With the 1-hard-or-2-soft verdict rule, severity reflects corroboration level:
+     * - critical: hook_framework_lib + corroboration (another signal)
+     * - high: hook_framework_lib alone (single hard)
+     * - medium: two soft signals corroborating each other
+     * - none: fewer than required signals
      */
-    fun severityFor(signals: List<String>): String = when {
-        signals.contains("hook_native_method") && signals.size >= 2 -> "critical"
-        signals.contains("hook_framework_lib") && signals.size >= 2 -> "high"
-        hookVerdict(signals) -> "medium"
-        else -> "none"
+    fun severityFor(signals: List<String>): String {
+        val distinctSignals = signals.distinct()
+        val hardSignals = distinctSignals.count { it in hardHookSignals }
+        val softSignals = distinctSignals.count { it in softHookSignals }
+        val hasFrameworkLib = signals.contains("hook_framework_lib")
+        val total = distinctSignals.size
+
+        return when {
+            // Critical: framework lib + corroboration (any other signal)
+            hasFrameworkLib && total >= 2 -> "critical"
+            // High: framework lib alone (single hard)
+            hasFrameworkLib && total == 1 -> "high"
+            // Medium: two soft signals corroborating
+            hookVerdict(signals) -> "medium"
+            else -> "none"
+        }
     }
 
     /**
