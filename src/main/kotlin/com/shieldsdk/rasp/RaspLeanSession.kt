@@ -2,7 +2,6 @@ package com.shieldsdk.rasp
 
 import android.app.Activity
 import android.content.Context
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -62,8 +61,7 @@ public class RaspLeanSession private constructor(
     private var scheduled: ScheduledFuture<*>? = null
     private val usb by lazy { RaspUsbAnalysis(appContext) }
     private val clipboard by lazy { RaspClipboardGuard(appContext) }
-    private val lastSignature = ConcurrentHashMap<String, String>()
-    private val lastShippedAt = ConcurrentHashMap<String, Long>()
+    private val shippingPolicy = RaspLeanShippingPolicy(config.heartbeatIntervalMillis)
 
     public fun setListener(value: RaspLeanStateListener?) { listener = value }
     public fun refreshNow() { if (!disposed.get()) scheduler.execute(::tick) }
@@ -148,13 +146,8 @@ public class RaspLeanSession private constructor(
     private fun ship(results: Collection<RaspCheckResult>) {
         if (!RaspEventShipper.isConfigured()) return
         val now = System.currentTimeMillis()
-        results.filter { result ->
-            val signature = result.status.name + result.evidence.joinToString { "${it.key}=${it.value}" }
-            val baseline = lastShippedAt[result.detectorId] == null
-            val changed = lastSignature[result.detectorId] != signature
-            val heartbeat = result.status.isThreat && !baseline && now - (lastShippedAt[result.detectorId] ?: now) >= config.heartbeatIntervalMillis
-            if (baseline || changed || heartbeat) { lastSignature[result.detectorId] = signature; lastShippedAt[result.detectorId] = now; true } else false
-        }.forEach { result -> RaspEventShipper.shipAsync(appContext, listOf(withLocation(result))) }
+        results.filter { shippingPolicy.shouldShip(it, now) }
+            .forEach { result -> RaspEventShipper.shipAsync(appContext, listOf(withLocation(result))) }
     }
 
     private fun withLocation(result: RaspCheckResult): RaspCheckResult {
@@ -180,5 +173,27 @@ public class RaspLeanSession private constructor(
             session.scheduled = session.scheduler.scheduleWithFixedDelay(session::tick, config.pollIntervalMillis, config.pollIntervalMillis, TimeUnit.MILLISECONDS)
             return session
         }
+    }
+}
+
+/**
+ * Stateful shipping policy kept separate from Android scheduling so its
+ * baseline, change-detection, and detected-heartbeat contract can be unit
+ * tested without a device, network, or Flutter channel.
+ */
+internal class RaspLeanShippingPolicy(private val heartbeatIntervalMillis: Long) {
+    private val lastSignature = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val lastShippedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun shouldShip(result: RaspCheckResult, nowMillis: Long): Boolean {
+        val signature = result.status.name + result.evidence.joinToString { "${it.key}=${it.value}" }
+        val baseline = lastShippedAt[result.detectorId] == null
+        val changed = lastSignature[result.detectorId] != signature
+        val heartbeat = result.status.isThreat && !baseline &&
+            nowMillis - (lastShippedAt[result.detectorId] ?: nowMillis) >= heartbeatIntervalMillis
+        if (!baseline && !changed && !heartbeat) return false
+        lastSignature[result.detectorId] = signature
+        lastShippedAt[result.detectorId] = nowMillis
+        return true
     }
 }
