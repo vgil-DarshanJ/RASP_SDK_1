@@ -1,0 +1,4 @@
+{
+  "publicKey": "MCowBQYDK2VwAyEAiFUHkoUhBf3bo2hEhiEYynU1oVKYvzmNCPKWPtq40RI=",
+  "list": "{\"payload\":\"{\\\"version\\\":7,\\\"entries\\\":[{\\\"package\\\":\\\"com.bad.trojan\\\",\\\"category\\\":\\\"banking_trojan\\\",\\\"severity\\\":\\\"critical\\\"},{\\\"package\\\":\\\"com.sketchy.remote\\\",\\\"category\\\":\\\"remote_access\\\",\\\"severity\\\":\\\"high\\\"}]}\",\"signature\":\"RTBC52POob7VY3jHZvtg8vNnW/GlRo8VylBa3lq3F3jGyl2jLz5HQ9jXphwfNvrUp7ZmE7hrskbvQLeE6LDvAg==\"}"
+}

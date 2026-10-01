@@ -60,6 +60,15 @@ public data class RaspLeanConfig(
     val thirdPartyKeyboardDetection: Boolean = false, val taskHijackDetection: Boolean = false,
     /** Extra keyboard packages to trust when installed from Google Play (Gboard is built in). */
     val trustedKeyboardPackages: List<String> = emptyList(),
+    // Task 3c detectors — all off by default
+    val deviceStateAttestationDetection: Boolean = false,
+    /** Report `patch_too_old` when the attested OS patch is older than this many days; `null` = off. */
+    val maxSecurityPatchAgeDays: Int? = null,
+    val malwareReputationDetection: Boolean = false,
+    /** Signed reputation list (see RaspMalwareReputationProbes); e.g. read from an app asset. */
+    val malwareReputationListJson: String? = null,
+    /** Ed25519 public key that signs the list: Base64 of 32 raw bytes or of an X.509 SPKI. */
+    val malwareReputationPublicKey: String? = null,
     /** Enable Evidence Envelope path (device-key signed, replay-resistant) instead of legacy HMAC. Default off. */
     val useEvidenceEnvelope: Boolean = false,
     val pollIntervalMillis: Long = 4_000,
@@ -172,6 +181,12 @@ public class RaspLeanSession private constructor(
             RaspShieldCore.checkThirdPartyKeyboardBlocking(appContext, config.trustedKeyboardPackages)
         }
         add(config.taskHijackDetection, RaspTaskHijackProbes.DETECTOR_ID) { RaspShieldCore.checkTaskHijackBlocking(appContext) }
+        add(config.deviceStateAttestationDetection, RaspDeviceStateAttestationProbes.DETECTOR_ID) {
+            RaspShieldCore.checkDeviceStateAttestationBlocking(appContext, config.maxSecurityPatchAgeDays)
+        }
+        add(config.malwareReputationDetection, RaspMalwareReputationProbes.DETECTOR_ID) {
+            RaspShieldCore.checkMalwareReputationBlocking(appContext, config.malwareReputationListJson, config.malwareReputationPublicKey)
+        }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
     }
 

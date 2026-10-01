@@ -1028,4 +1028,25 @@ object RaspShieldCore {
 
     fun checkTaskHijackAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
         runAsync(context, callback, ::checkTaskHijackBlocking)
+
+    // ── Device state attestation (Task 3c) ─────────────────────────────
+
+    /** Creates the device key on first use (may take ~100-500 ms). See [RaspDeviceStateAttestationProbes]. */
+    @JvmOverloads
+    fun checkDeviceStateAttestationBlocking(context: Context, maxSecurityPatchAgeDays: Int? = null): RaspCheckResult =
+        runGuarded(RaspDeviceStateAttestationProbes.DETECTOR_ID) {
+            RaspDeviceStateAttestationProbes.evaluate(
+                RaspDeviceStateAttestationProbes.observe(context),
+                maxSecurityPatchAgeDays,
+                System.currentTimeMillis() / 86_400_000L,
+            )
+        }
+
+    // ── Malware reputation (Task 3c) ───────────────────────────────────
+
+    /** [listJson]: signed list; [publicKeyBase64]: its Ed25519 key. See [RaspMalwareReputationProbes]. */
+    fun checkMalwareReputationBlocking(context: Context, listJson: String?, publicKeyBase64: String?): RaspCheckResult =
+        runGuarded(RaspMalwareReputationProbes.DETECTOR_ID) {
+            RaspMalwareReputationProbes.evaluate(RaspMalwareReputationProbes.observe(context, listJson, publicKeyBase64))
+        }
 }
