@@ -427,13 +427,7 @@ object RaspShieldCore {
     // ── Hooking / method interception ─────────────────────────────────
 
     fun checkHookingBlocking(context: Context): RaspCheckResult = runGuarded("hook_detection") {
-        val probes = RaspHookProbes(context)
-        val signals = probes.hookSignals()
-        val detected = RaspHookAnalysis.hookVerdict(signals)
-        val evidence = signals.map { RaspEvidence("hook_signal", it) } +
-            listOf(RaspEvidence("signal_count", signals.size))
-        if (detected) RaspCheckResult.detected("hook_detection", evidence)
-        else RaspCheckResult.secure("hook_detection", evidence)
+        RaspHookAnalysis.toCheckResult(RaspHookProbes(context).observe())
     }
 
     fun checkHookingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =

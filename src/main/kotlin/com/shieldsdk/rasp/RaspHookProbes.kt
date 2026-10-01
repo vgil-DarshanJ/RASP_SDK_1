@@ -136,48 +136,52 @@ class RaspHookProbes(private val context: Context) {
         return hits
     }
 
+    /** `/proc/self/maps`, or `null` when it cannot be read (some hardened builds). */
+    fun readMaps(): String? = try {
+        java.io.File("/proc/self/maps").bufferedReader().use { it.readText() }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * `true` if any critical method is hooked, `false` if at least one resolved
+     * and none is hooked, `null` if none could be resolved (nothing was checked).
+     */
+    fun nativeMethodHooked(): Boolean? = try {
+        val integrity = criticalMethodIntegrity().values
+        when {
+            integrity.any { it == MethodIntegrity.HOOKED } -> true
+            integrity.any { it == MethodIntegrity.INTACT } -> false
+            else -> null
+        }
+    } catch (e: Throwable) {
+        null
+    }
+
+    /**
+     * One scan: reads maps once and checks method integrity once. Signal ids
+     * and their hard/soft classes are in [RaspHookAnalysis]:
+     *
+     * | Signal | Source | Class |
+     * |---|---|---|
+     * | `hook_framework_lib` | a hooking library's name in a mapped path | hard |
+     * | `hook_suspicious_lib_path` | executable mapping from `/data/local/tmp`, `/sdcard`, … | soft |
+     * | `hook_rwx_mapping` | more than [RaspHookAnalysis.RWX_MAPPING_THRESHOLD] rwx regions | soft |
+     * | `hook_native_method` | a critical SDK method reports `native` via reflection | soft |
+     */
+    fun observe(): RaspHookAnalysis.Observation =
+        RaspHookAnalysis.observe(readMaps(), nativeMethodHooked())
+
     /**
      * Every hooking signal currently firing, as stable ids.
      *
      * Families are independent by construction — see [RaspHookAnalysis].
      */
-    fun hookSignals(): List<String> {
-        val hits = mutableListOf<String>()
-
-        // 1. A hooking framework's library resident in this process.
-        try {
-            java.io.File("/proc/self/maps").bufferedReader().use { r ->
-                val maps = r.readText()
-                if (RaspHookAnalysis.mapsIndicateHookFramework(maps)) {
-                    hits.add("hook_framework_lib")
-                }
-                // 2. Executable code mapped from a writable location.
-                if (RaspHookAnalysis.suspiciousExecutableMappings(maps).isNotEmpty()) {
-                    hits.add("hook_suspicious_lib_path")
-                }
-                // 3. Unusual amount of writable+executable memory.
-                if (RaspHookAnalysis.countRwxMappings(maps) >
-                    RaspHookAnalysis.RWX_MAPPING_THRESHOLD
-                ) {
-                    hits.add("hook_rwx_mapping")
-                }
-            }
-        } catch (e: Exception) { /* unreadable on some hardened builds */ }
-
-        // 4. The runtime's own view of security-critical methods.
-        hits.addAll(criticalMethodSignals())
-
-        return hits
-    }
+    fun hookSignals(): List<String> = observe().signals
 
     /** Frameworks actually named in this process's mappings, for evidence. */
-    fun detectedFrameworks(): List<String> = try {
-        java.io.File("/proc/self/maps").bufferedReader().use {
-            RaspHookAnalysis.hookFrameworksIn(it.readText())
-        }
-    } catch (e: Exception) {
-        emptyList()
-    }
+    fun detectedFrameworks(): List<String> =
+        readMaps()?.let { RaspHookAnalysis.hookFrameworksIn(it) } ?: emptyList()
 
     /** True when hooking is judged present. See [RaspHookAnalysis.hookVerdict]. */
     fun isHookingDetected(): Boolean = RaspHookAnalysis.hookVerdict(hookSignals())
@@ -193,14 +197,15 @@ class RaspHookProbes(private val context: Context) {
      * a host app details about the device's layout that it has no need for.
      */
     fun hookDetectionResult(): Map<String, Any> {
-        val signals = hookSignals()
+        val observation = observe()
+        val signals = observation.signals
         return mapOf(
             "detector_id" to "hook_detection",
             "detected" to RaspHookAnalysis.hookVerdict(signals),
             "severity" to RaspHookAnalysis.severityFor(signals),
             "confidence" to RaspHookAnalysis.confidenceFor(signals),
             "evidence" to signals,
-            "frameworks" to detectedFrameworks(),
+            "frameworks" to observation.frameworks,
             "timestamp" to System.currentTimeMillis(),
             "platform" to "android",
             "detector_version" to DETECTOR_VERSION,
