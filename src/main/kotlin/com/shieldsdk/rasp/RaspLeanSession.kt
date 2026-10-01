@@ -29,7 +29,10 @@ public data class RaspLeanConfig(
     val vpnDetection: Boolean = false, val mitmDetection: Boolean = false,
     val highRiskIpDetection: Boolean = false, val overlayDetection: Boolean = false,
     val accessibilityDetection: Boolean = false, val externalDisplayDetection: Boolean = false,
-    val screenshotEventDetection: Boolean = false, val pollIntervalMillis: Long = 4_000,
+    val screenshotEventDetection: Boolean = false,
+    /** Enable Evidence Envelope path (device-key signed, replay-resistant) instead of legacy HMAC. Default off. */
+    val useEvidenceEnvelope: Boolean = false,
+    val pollIntervalMillis: Long = 4_000,
     val heartbeatIntervalMillis: Long = 20_000, val detectorTimeoutMillis: Long = 6_000,
 )
 

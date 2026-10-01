@@ -60,11 +60,9 @@ public class RaspDeviceKey(private val context: Context) {
      * Returns the Base64-encoded X.509 (SPKI) public key.
      * Safe to log, safe to send to backend — never reveals private material.
      */
-    public fun getPublicKeyBase64(): String? {
+    open fun getPublicKeyBase64(): String? {
         return try {
-            val entry = keyStore.getEntry(KEY_ALIAS, null)
-                ?: return generateKeyPair().let { getPublicKeyBase64()!! }
-            val publicKey = (entry as java.security.KeyStore.PrivateKeyEntry).certificate.publicKey
+            val publicKey = getPublicKey() ?: return null
             Base64.encodeToString(publicKey.encoded, Base64.NO_WRAP)
         } catch (e: Exception) {
             notifyLogger("device_key", e)
@@ -77,7 +75,7 @@ public class RaspDeviceKey(private val context: Context) {
      * Returns `null` if the key is unavailable or signing fails.
      * Never throws — failures are logged via [RaspShieldCore.logger].
      */
-    public fun sign(payload: ByteArray): String? {
+    open fun sign(payload: ByteArray): String? {
         return try {
             val entry = keyStore.getEntry(KEY_ALIAS, null) as? java.security.KeyStore.PrivateKeyEntry
                 ?: return generateKeyPair().let { sign(payload) }
@@ -96,7 +94,7 @@ public class RaspDeviceKey(private val context: Context) {
      * Verifies a signature against this device's public key.
      * Purely for self-test / backend round-trip verification.
      */
-    public fun verify(payload: ByteArray, signatureB64: String): Boolean {
+    open fun verify(payload: ByteArray, signatureB64: String): Boolean {
         return try {
             val publicKey = getPublicKey() ?: return false
             val signature = Signature.getInstance(SIGNATURE_ALGORITHM)
@@ -123,12 +121,34 @@ public class RaspDeviceKey(private val context: Context) {
     /** Checks if a device identity key already exists. */
     public fun hasKey(): Boolean = keyStore.containsAlias(KEY_ALIAS)
 
-    /** Returns the raw [PublicKey] for advanced use cases (e.g. certificate pinning). */
-    public fun getPublicKey(): PublicKey? {
+    /**
+     * Returns the raw [PublicKey] for advanced use cases (e.g. certificate pinning).
+     */
+    open fun getPublicKey(): PublicKey? {
         return try {
             val entry = keyStore.getEntry(KEY_ALIAS, null) as? java.security.KeyStore.PrivateKeyEntry
                 ?: return null
             entry.certificate.publicKey
+        } catch (e: Exception) {
+            notifyLogger("device_key", e)
+            null
+        }
+    }
+
+    /**
+     * Returns the attestation certificate chain as a list of Base64-encoded DER certificates.
+     * The first element is the leaf certificate (device's attestation cert),
+     * followed by any intermediate CAs, ending with the root.
+     * Returns `null` if attestation is not supported or the key doesn't have a certificate chain.
+     * This is used by the backend to verify the key's hardware-backed origin.
+     */
+    public fun getAttestationCertificateChain(): List<String>? {
+        return try {
+            val entry = keyStore.getEntry(KEY_ALIAS, null) as? java.security.KeyStore.PrivateKeyEntry
+                ?: return null
+            val chain = entry.certificateChain ?: return null
+            if (chain.isEmpty()) return null
+            chain.map { Base64.encodeToString(it.encoded, Base64.NO_WRAP) }.toList()
         } catch (e: Exception) {
             notifyLogger("device_key", e)
             null
