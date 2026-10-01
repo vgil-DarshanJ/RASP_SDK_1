@@ -46,7 +46,7 @@ object RaspHookAnalysis {
      */
     val hookFrameworkMarkers: List<String> = listOf(
         // Xposed family and its reimplementations
-        "xposed", "lsposed", "edxposed", "riru", "zygisk", "yahfa", "sandhook",
+        "xposed", "lsposed", "lspd", "edxposed", "riru", "zygisk", "yahfa", "sandhook",
         // Cydia Substrate / its Android port
         "substrate", "libsubstrate",
         // Native inline-hooking engines commonly embedded in tampered apps
@@ -65,6 +65,15 @@ object RaspHookAnalysis {
         "/tmp/", "/cache/",
     )
 
+    /**
+     * Markers short or common enough to appear inside unrelated names
+     * (`epic` in `epicenter`, `whale` in `whalesong`). They match only a whole
+     * path token, never a prefix. Every other marker matches a token prefix,
+     * so `xposed` also catches `XposedBridge.jar`.
+     */
+    private val exactTokenMarkers: Set<String> =
+        setOf("epic", "libepic", "whale", "libwhale", "riru", "lspd", "libinject", "injector")
+
     /** Hard signal: known hooking library found in maps (individually conclusive). */
     val hardHookSignals: Set<String> = setOf("hook_framework_lib")
 
@@ -72,10 +81,8 @@ object RaspHookAnalysis {
     val softHookSignals: Set<String> = setOf("hook_rwx_mapping", "hook_suspicious_lib_path", "hook_native_method")
 
     /** `true` when a mapped region names a known hooking framework. */
-    fun mapsIndicateHookFramework(mapsContent: String): Boolean {
-        val maps = mapsContent.lowercase()
-        return hookFrameworkMarkers.any { maps.contains(it) }
-    }
+    fun mapsIndicateHookFramework(mapsContent: String): Boolean =
+        hookFrameworksIn(mapsContent).isNotEmpty()
 
     /**
      * Extracts the framework markers actually present, for evidence.
@@ -83,10 +90,34 @@ object RaspHookAnalysis {
      * Reporting *which* framework was seen is what lets an analyst distinguish
      * a Zygisk module on a developer's own phone from Substrate inside a
      * repackaged banking app.
+     *
+     * Only the pathname part of each mapping is inspected, split into tokens
+     * on anything that is not a letter or digit (`/data/adb/lspd/libriru_x.so`
+     * → `data adb lspd libriru x so`, plus `riru` with the `lib` prefix
+     * removed). Matching a raw substring of the whole dump was the hard
+     * signal's false-positive source: a hard signal convicts on its own, so it
+     * must name a library, not happen to contain four letters of one.
      */
     fun hookFrameworksIn(mapsContent: String): List<String> {
-        val maps = mapsContent.lowercase()
-        return hookFrameworkMarkers.filter { maps.contains(it) }
+        val tokens = HashSet<String>()
+        mapsContent.lineSequence().forEach { line -> tokens.addAll(pathTokens(line)) }
+        return hookFrameworkMarkers.filter { marker ->
+            if (marker in exactTokenMarkers) marker in tokens
+            else tokens.any { it.startsWith(marker) }
+        }
+    }
+
+    /** Lower-cased name tokens of one maps line's pathname (empty for anonymous memory). */
+    internal fun pathTokens(mapsLine: String): List<String> {
+        val slash = mapsLine.indexOf('/')
+        val bracket = mapsLine.indexOf('[')
+        val start = when {
+            slash >= 0 && (bracket < 0 || slash < bracket) -> slash
+            bracket >= 0 -> bracket
+            else -> return emptyList()
+        }
+        val raw = mapsLine.substring(start).lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+        return raw + raw.filter { it.length > 3 && it.startsWith("lib") }.map { it.removePrefix("lib") }
     }
 
     /**
@@ -181,6 +212,81 @@ object RaspHookAnalysis {
             // Medium: two soft signals corroborating
             hookVerdict(signals) -> "medium"
             else -> "none"
+        }
+    }
+
+    /** `"hard"` or `"soft"` for a signal id, for evidence. */
+    fun signalClass(signal: String): String = if (signal in hardHookSignals) "hard" else "soft"
+
+    /**
+     * Everything one hook scan observed. [mapsContent] is `null` when
+     * `/proc/self/maps` could not be read.
+     */
+    data class Observation(
+        val signals: List<String>,
+        val frameworks: List<String>,
+        val rwxMappingCount: Int?,
+        val suspiciousExecMappingCount: Int?,
+        val mapsReadable: Boolean,
+        /** `null` when no critical method could be resolved by reflection. */
+        val nativeMethodHooked: Boolean?,
+    )
+
+    /**
+     * Turns raw readings into signals. Pure: the probe class supplies the
+     * maps text and the method-integrity reading.
+     */
+    fun observe(mapsContent: String?, nativeMethodHooked: Boolean?): Observation {
+        val signals = mutableListOf<String>()
+        var frameworks = emptyList<String>()
+        var rwx: Int? = null
+        var suspicious: Int? = null
+        if (mapsContent != null) {
+            frameworks = hookFrameworksIn(mapsContent)
+            if (frameworks.isNotEmpty()) signals.add("hook_framework_lib")
+            suspicious = suspiciousExecutableMappings(mapsContent).size
+            if (suspicious > 0) signals.add("hook_suspicious_lib_path")
+            rwx = countRwxMappings(mapsContent)
+            if (rwx > RWX_MAPPING_THRESHOLD) signals.add("hook_rwx_mapping")
+        }
+        if (nativeMethodHooked == true) signals.add("hook_native_method")
+        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked)
+    }
+
+    /**
+     * The reported result: DETECTED on one hard or two soft signals; UNKNOWN
+     * when `/proc/self/maps` was unreadable, because the hard signal and two
+     * of the three soft signals come from it, so "nothing found" would only
+     * mean "nothing looked at"; SECURE otherwise.
+     *
+     * Evidence names every signal that fired (with its hard/soft class), the
+     * framework markers matched, and the counts behind the soft signals, so a
+     * DETECTED on a real device shows which rule convicted it.
+     */
+    fun toCheckResult(observation: Observation, detectorId: String = "hook_detection"): RaspCheckResult {
+        val distinct = observation.signals.distinct()
+        val evidence = buildList {
+            distinct.forEach { add(RaspEvidence("hook_signal", it, signalClass(it))) }
+            observation.frameworks.forEach { add(RaspEvidence("hook_framework", it)) }
+            observation.rwxMappingCount?.let {
+                add(RaspEvidence("rwx_mapping_count", it, "threshold $RWX_MAPPING_THRESHOLD"))
+            }
+            observation.suspiciousExecMappingCount?.let { add(RaspEvidence("suspicious_exec_mapping_count", it)) }
+            add(RaspEvidence("method_integrity", when (observation.nativeMethodHooked) {
+                true -> "hooked"
+                false -> "intact"
+                null -> "unavailable"
+            }))
+            add(RaspEvidence("maps_readable", observation.mapsReadable))
+            add(RaspEvidence("signal_count", distinct.size))
+        }
+        return when {
+            hookVerdict(distinct) -> RaspCheckResult.detected(detectorId, evidence)
+            !observation.mapsReadable -> RaspCheckResult(
+                detectorId, RaspCheckStatus.UNKNOWN, evidence,
+                reason = "/proc/self/maps unreadable; hard and most soft hook signals could not be evaluated",
+            )
+            else -> RaspCheckResult.secure(detectorId, evidence)
         }
     }
 
