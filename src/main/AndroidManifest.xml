@@ -40,6 +40,18 @@
         <package android:name="com.chelpus.lackypatch"/>
         <package android:name="com.eltechs.axm"/>
         <package android:name="io.va.exposed"/>
+
+        <!-- Task 3b/3c — task_hijack and malware_reputation scan installed
+             apps. On API 30+ only declared or matching packages are
+             visible; this intent makes every app with a launcher icon
+             visible (not apps without one). It merges into the host app's
+             manifest. A host that does not want it can remove it with
+             tools:node="remove"; those two detectors then report a smaller
+             `visible_packages` count. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+        </intent>
     </queries>
 
     <!-- INTERNET — Phase 8 only (RaspGeoIpProbes' IP-reputation lookup and

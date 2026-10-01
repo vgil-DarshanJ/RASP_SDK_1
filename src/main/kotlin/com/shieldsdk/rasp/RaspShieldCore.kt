@@ -964,4 +964,68 @@ object RaspShieldCore {
 
     fun checkScreenRecordingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
         runAsync(context, callback, ::checkScreenRecordingBlocking)
+
+    // ── Vishing: call during app use (Task 3b) ─────────────────────────
+
+    fun checkVishingCallBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspVishingCallProbes.DETECTOR_ID) {
+            RaspVishingCallProbes.evaluate(RaspVishingCallProbes.observe(context))
+        }
+
+    fun checkVishingCallAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback, ::checkVishingCallBlocking)
+
+    /**
+     * For payment/transfer screens: `true` while a phone call is ringing or in
+     * progress, `false` when there is none, `null` when it cannot be told
+     * (no READ_PHONE_STATE). Cheap; safe to call on the main thread.
+     */
+    fun isCallActive(context: Context): Boolean? = try {
+        RaspVishingCallProbes.isCallActive(context)
+    } catch (e: Exception) {
+        notifyLogger(RaspVishingCallProbes.DETECTOR_ID, e)
+        null
+    }
+
+    // ── SIM change (Task 3b) ───────────────────────────────────────────
+
+    fun checkSimChangeBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspSimChangeProbes.DETECTOR_ID) {
+            RaspSimChangeProbes.evaluate(
+                RaspSimChangeProbes.observe(context),
+                RaspSimChangeProbes.EncryptedStore(context),
+                System.currentTimeMillis(),
+            )
+        }
+
+    fun checkSimChangeAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback, ::checkSimChangeBlocking)
+
+    /**
+     * Accepts the current SIMs after a detected change (e.g. once the customer
+     * is re-verified); `sim_change` returns to SECURE. Blocking (storage I/O).
+     */
+    fun acknowledgeSimChange(context: Context): Boolean =
+        RaspSimChangeProbes.acknowledgeChange(RaspSimChangeProbes.EncryptedStore(context))
+
+    // ── Third-party keyboard (Task 3b) ─────────────────────────────────
+
+    @JvmOverloads
+    fun checkThirdPartyKeyboardBlocking(context: Context, trustedPackages: List<String> = emptyList()): RaspCheckResult =
+        runGuarded(RaspThirdPartyKeyboardProbes.DETECTOR_ID) {
+            RaspThirdPartyKeyboardProbes.evaluate(RaspThirdPartyKeyboardProbes.observe(context), trustedPackages)
+        }
+
+    fun checkThirdPartyKeyboardAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback) { checkThirdPartyKeyboardBlocking(it) }
+
+    // ── Task hijacking (Task 3b) ───────────────────────────────────────
+
+    fun checkTaskHijackBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspTaskHijackProbes.DETECTOR_ID) {
+            RaspTaskHijackProbes.evaluate(RaspTaskHijackProbes.observe(context))
+        }
+
+    fun checkTaskHijackAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback, ::checkTaskHijackBlocking)
 }

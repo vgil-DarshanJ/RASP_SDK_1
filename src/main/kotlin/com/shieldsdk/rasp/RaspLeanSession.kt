@@ -55,6 +55,11 @@ public data class RaspLeanConfig(
     val unsafeWifiDetection: Boolean = false, val screenRecordingDetection: Boolean = false,
     /** Optional server time (ms since epoch) for `time_spoofing`, anchored when the session starts. */
     val serverTimeMillis: Long? = null,
+    // Task 3b detectors — all off by default
+    val vishingCallDetection: Boolean = false, val simChangeDetection: Boolean = false,
+    val thirdPartyKeyboardDetection: Boolean = false, val taskHijackDetection: Boolean = false,
+    /** Extra keyboard packages to trust when installed from Google Play (Gboard is built in). */
+    val trustedKeyboardPackages: List<String> = emptyList(),
     /** Enable Evidence Envelope path (device-key signed, replay-resistant) instead of legacy HMAC. Default off. */
     val useEvidenceEnvelope: Boolean = false,
     val pollIntervalMillis: Long = 4_000,
@@ -161,6 +166,12 @@ public class RaspLeanSession private constructor(
         add(config.screenRecordingDetection, RaspScreenRecordingProbes.DETECTOR_ID) {
             RaspShieldCore.checkScreenRecordingBlocking(appContext)
         }
+        add(config.vishingCallDetection, RaspVishingCallProbes.DETECTOR_ID) { RaspShieldCore.checkVishingCallBlocking(appContext) }
+        add(config.simChangeDetection, RaspSimChangeProbes.DETECTOR_ID) { RaspShieldCore.checkSimChangeBlocking(appContext) }
+        add(config.thirdPartyKeyboardDetection, RaspThirdPartyKeyboardProbes.DETECTOR_ID) {
+            RaspShieldCore.checkThirdPartyKeyboardBlocking(appContext, config.trustedKeyboardPackages)
+        }
+        add(config.taskHijackDetection, RaspTaskHijackProbes.DETECTOR_ID) { RaspShieldCore.checkTaskHijackBlocking(appContext) }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
     }
 
