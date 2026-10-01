@@ -2,16 +2,36 @@ package com.shieldsdk.rasp
 
 import android.app.Activity
 import android.content.Context
+import android.location.Location
+import android.os.Build
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Host-supplied optional location; the engine never requests location itself. */
+/**
+ * Host-supplied optional location; the engine never requests location itself.
+ * [isMock] is the fix's own mock flag when the host has it (`Location.isMock()`,
+ * Flutter geolocator `Position.isMocked`); `null` when unknown.
+ */
 public data class RaspLocationSnapshot(
     val latitude: Double, val longitude: Double, val accuracyMeters: Double? = null,
     val capturedAtMillis: Long = System.currentTimeMillis(),
-)
+    val isMock: Boolean? = null,
+) {
+    public companion object {
+        /** Builds a snapshot from an Android [Location], including its mock flag. */
+        @JvmStatic
+        @Suppress("DEPRECATION")
+        public fun fromLocation(location: Location): RaspLocationSnapshot = RaspLocationSnapshot(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+            capturedAtMillis = location.time,
+            isMock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock else location.isFromMockProvider,
+        )
+    }
+}
 
 /** The one configuration contract used by native and Flutter wrappers. */
 public data class RaspLeanConfig(
@@ -30,6 +50,11 @@ public data class RaspLeanConfig(
     val highRiskIpDetection: Boolean = false, val overlayDetection: Boolean = false,
     val accessibilityDetection: Boolean = false, val externalDisplayDetection: Boolean = false,
     val screenshotEventDetection: Boolean = false,
+    // Task 3a detectors — all off by default
+    val mockLocationDetection: Boolean = false, val timeSpoofingDetection: Boolean = false,
+    val unsafeWifiDetection: Boolean = false, val screenRecordingDetection: Boolean = false,
+    /** Optional server time (ms since epoch) for `time_spoofing`, anchored when the session starts. */
+    val serverTimeMillis: Long? = null,
     /** Enable Evidence Envelope path (device-key signed, replay-resistant) instead of legacy HMAC. Default off. */
     val useEvidenceEnvelope: Boolean = false,
     val pollIntervalMillis: Long = 4_000,
@@ -65,8 +90,14 @@ public class RaspLeanSession private constructor(
     private val usb by lazy { RaspUsbAnalysis(appContext) }
     private val clipboard by lazy { RaspClipboardGuard(appContext) }
     private val shippingPolicy = RaspLeanShippingPolicy(config.heartbeatIntervalMillis)
+    private val timeMonitor = RaspTimeSpoofingProbes.Monitor().also { monitor ->
+        config.serverTimeMillis?.let { monitor.setServerTime(it) }
+    }
 
     public fun setListener(value: RaspLeanStateListener?) { listener = value }
+
+    /** Supplies a trusted server time for `time_spoofing` (e.g. from an HTTP `Date` header). */
+    public fun setServerTime(serverTimeMillis: Long) { timeMonitor.setServerTime(serverTimeMillis) }
     public fun refreshNow() { if (!disposed.get()) scheduler.execute(::tick) }
 
     private fun applyConfig() {
@@ -120,6 +151,16 @@ public class RaspLeanSession private constructor(
         add(config.accessibilityDetection, "accessibility") { RaspShieldCore.checkAccessibilityBlocking(appContext) }
         add(config.externalDisplayDetection, "external_display") { RaspShieldCore.checkExternalDisplayBlocking(appContext) }
         add(config.screenshotEventDetection, "screenshot_event") { screenshotEventResult() }
+        add(config.mockLocationDetection, RaspMockLocationProbes.DETECTOR_ID) {
+            RaspShieldCore.checkMockLocationBlocking(appContext, currentLocation)
+        }
+        add(config.timeSpoofingDetection, RaspTimeSpoofingProbes.DETECTOR_ID) {
+            RaspShieldCore.checkTimeSpoofingBlocking(appContext, timeMonitor)
+        }
+        add(config.unsafeWifiDetection, RaspUnsafeWifiProbes.DETECTOR_ID) { RaspShieldCore.checkUnsafeWifiBlocking(appContext) }
+        add(config.screenRecordingDetection, RaspScreenRecordingProbes.DETECTOR_ID) {
+            RaspShieldCore.checkScreenRecordingBlocking(appContext)
+        }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
     }
 

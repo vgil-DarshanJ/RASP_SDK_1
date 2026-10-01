@@ -917,4 +917,51 @@ object RaspShieldCore {
         checkDeviceLockMissingBlocking(context),
         checkSecureHardwareUnavailableBlocking(context),
     )
+
+    // ── Location integrity: mock location (Task 3a) ───────────────────
+
+    /** [location] is what the host supplied; `null` → UNAVAILABLE. See [RaspMockLocationProbes]. */
+    fun checkMockLocationBlocking(context: Context, location: RaspLocationSnapshot?): RaspCheckResult =
+        runGuarded(RaspMockLocationProbes.DETECTOR_ID) {
+            RaspMockLocationProbes.evaluate(RaspMockLocationProbes.observe(context, location))
+        }
+
+    // ── Time spoofing (Task 3a) ────────────────────────────────────────
+
+    /** Uses [monitor]'s previous reading; the default is one per process. See [RaspTimeSpoofingProbes]. */
+    @JvmOverloads
+    fun checkTimeSpoofingBlocking(
+        context: Context,
+        monitor: RaspTimeSpoofingProbes.Monitor = RaspTimeSpoofingProbes.processMonitor,
+    ): RaspCheckResult = runGuarded(RaspTimeSpoofingProbes.DETECTOR_ID) {
+        RaspTimeSpoofingProbes.evaluate(
+            monitor.observe(RaspTimeSpoofingProbes.ClockReading.now(), RaspTimeSpoofingProbes.readAutoTimeEnabled(context)),
+        )
+    }
+
+    /** Supplies a trusted server time to the process-wide time monitor. */
+    fun setServerTime(serverTimeMillis: Long) = RaspTimeSpoofingProbes.processMonitor.setServerTime(serverTimeMillis)
+
+    fun checkTimeSpoofingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback) { checkTimeSpoofingBlocking(it) }
+
+    // ── Unsafe Wi-Fi (Task 3a) ─────────────────────────────────────────
+
+    fun checkUnsafeWifiBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspUnsafeWifiProbes.DETECTOR_ID) {
+            RaspUnsafeWifiProbes.evaluate(RaspUnsafeWifiProbes.observe(context))
+        }
+
+    fun checkUnsafeWifiAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback, ::checkUnsafeWifiBlocking)
+
+    // ── Screen recording (Task 3a) ─────────────────────────────────────
+
+    fun checkScreenRecordingBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspScreenRecordingProbes.DETECTOR_ID) {
+            RaspScreenRecordingProbes.evaluate(RaspScreenRecordingProbes.observe(context))
+        }
+
+    fun checkScreenRecordingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
+        runAsync(context, callback, ::checkScreenRecordingBlocking)
 }
