@@ -66,8 +66,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "consumer-rules.pro")
+            // This is an SDK AAR with a public Kotlin/Java API. Library-side
+            // shrinking removed public entry points that no engine source
+            // referenced directly (including RaspLeanSession and
+            // RaspShieldCore), leaving consumers with unresolved references.
+            // Consumer R8 still applies consumer-rules.pro when an app builds
+            // a release; do not shrink or rename this published API here.
+            isMinifyEnabled = false
         }
     }
 

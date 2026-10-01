@@ -7,6 +7,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RaspPhase1FixesTest {
+    @Test fun `lean shipping sends baseline, changes, and detected heartbeats only`() {
+        val policy = RaspLeanShippingPolicy(600)
+        val detected = RaspCheckResult.detected("adb_enabled")
+        val secure = RaspCheckResult.secure("adb_enabled")
+
+        assertTrue(policy.shouldShip(detected, 0))
+        assertFalse(policy.shouldShip(detected, 150))
+        assertFalse(policy.shouldShip(detected, 599))
+        assertTrue(policy.shouldShip(detected, 600))
+        assertTrue(policy.shouldShip(secure, 750))
+        assertFalse(policy.shouldShip(secure, 1_500))
+    }
+
     @Test fun `an unreadable SELinux result is UNKNOWN not enforcing`() {
         assertEquals(null, RaspDeviceFingerprintProbes.parseSelinuxValue(null))
         assertEquals(null, RaspDeviceFingerprintProbes.parseSelinuxValue("denied"))
