@@ -134,45 +134,49 @@ object RaspHookAnalysis {
     const val RWX_MAPPING_THRESHOLD: Int = 12
 
     /**
-     * The hook verdict: one **hard** signal, or two **soft** ones.
+     * The hook verdict: at least TWO independent signals required.
      *
-     * Identical confidence model to the Frida and emulator detectors, for the
-     * same reason — a false positive here blocks a paying customer's phone, and
-     * both soft signals have innocent explanations (a JIT-heavy process; a
-     * developer who side-loaded something to `/data/local/tmp`).
+     * Changed from "one hard OR two soft" to "at least two signals from
+     * independent families" to prevent false positives from:
+     * - RWX mapping threshold (12) firing on JIT-heavy processes
+     * - Reflection check on SDK's own methods firing on obfuscated/ART-optimized builds
+     * - Single soft signals (suspicious path, RWX) having innocent explanations
+     *
+     * Families are independent by construction — see class doc table.
+     * A single `hook_native_method` is no longer sufficient; it needs corroboration.
      */
     fun hookVerdict(signals: List<String>): Boolean {
-        val hard = signals.count { it !in softHookSignals }
-        val soft = signals.count { it in softHookSignals }
-        return hard >= 1 || soft >= 2
+        // Count unique signal families (each distinct signal = one family)
+        val uniqueFamilies = signals.distinct().size
+        return uniqueFamilies >= 2
     }
 
     /**
      * Severity for a set of hook signals, as the SDK's shared vocabulary.
      *
-     * A confirmed Java-method hook on a security-critical function outranks a
-     * framework merely being resident: the former means the SDK's own
-     * decisions are being manipulated, which is the situation the whole engine
-     * exists to catch.
+     * With the new 2-signal minimum, severity reflects corroboration level:
+     * - critical: hook_native_method + at least one other signal
+     * - high: hook_framework_lib + at least one other signal
+     * - medium: any two corroborating signals (including two soft)
+     * - none: fewer than two signals
      */
     fun severityFor(signals: List<String>): String = when {
-        signals.contains("hook_native_method") -> "critical"
-        signals.contains("hook_framework_lib") -> "high"
+        signals.contains("hook_native_method") && signals.size >= 2 -> "critical"
+        signals.contains("hook_framework_lib") && signals.size >= 2 -> "high"
         hookVerdict(signals) -> "medium"
         else -> "none"
     }
 
     /**
-     * Confidence, 0–100, from how many independent families fired.
+     * Confidence, 0–100, from how many independent signal families fired.
      *
      * Reported alongside the verdict so a policy can require corroboration
      * before taking a destructive action such as locking the app.
+     * Each distinct signal family contributes ~25 confidence (max 4 families = 100).
      */
     fun confidenceFor(signals: List<String>): Int {
         if (signals.isEmpty()) return 0
-        val hard = signals.count { it !in softHookSignals }
-        val soft = signals.count { it in softHookSignals }
-        val score = hard * 40 + soft * 15
-        return score.coerceAtMost(100)
+        val uniqueFamilies = signals.distinct().size
+        return (uniqueFamilies * 25).coerceAtMost(100)
     }
 }
