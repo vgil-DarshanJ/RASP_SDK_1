@@ -33,14 +33,33 @@ public object RaspNetworkProbes {
     }
 
     /**
+     * What the proxy and user-CA probes saw: [signals] that fired, and
+     * [failedProbes] that could not run (a failed probe is not a clean one).
+     */
+    public data class MitmProbe(val signals: Set<String>, val failedProbes: Set<String>)
+
+    /**
      * Proxy and user-CA interception indicators. A user CA is evidence, not a
      * claim that every enterprise profile is malicious; policy decides action.
      */
-    fun mitmSignals(context: Context): Set<String> = buildSet {
-        proxySignals().forEach(::add)
-        if (hasUserInstalledCa()) add("user_installed_ca")
-        if (hasPlatformProxy(context)) add("platform_proxy")
+    fun mitmProbe(context: Context): MitmProbe {
+        val signals = proxySignals().toMutableSet()
+        val failed = mutableSetOf<String>()
+        when (userInstalledCa()) {
+            true -> signals += "user_installed_ca"
+            null -> failed += "user_ca_store"
+            false -> Unit
+        }
+        when (platformProxy(context)) {
+            true -> signals += "platform_proxy"
+            null -> failed += "platform_proxy"
+            false -> Unit
+        }
+        return MitmProbe(signals, failed)
     }
+
+    /** Signals only; see [mitmProbe] for the probes that could not run. */
+    fun mitmSignals(context: Context): Set<String> = mitmProbe(context).signals
 
     @JvmStatic
     fun proxySignals(properties: Map<String, String?> = mapOf(
@@ -56,22 +75,30 @@ public object RaspNetworkProbes {
     /** Retained for source compatibility; new code should consume named signals. */
     fun isSystemProxyConfigured(): Boolean = proxySignals().isNotEmpty()
 
-    private fun hasPlatformProxy(context: Context): Boolean = try {
+    /** `null` when the proxy setting could not be read. */
+    private fun platformProxy(context: Context): Boolean? = try {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             cm.defaultProxy != null
         } else {
             @Suppress("DEPRECATION") cm.defaultProxy != null
         }
-    } catch (_: Exception) { false }
+    } catch (_: Exception) { null }
 
-    /** AndroidCAStore exposes aliases prefixed `user:` for user-added roots. */
+    /**
+     * AndroidCAStore exposes aliases prefixed `user:` for user-added roots.
+     * `null` when the store could not be read.
+     */
     @JvmStatic
-    fun hasUserInstalledCa(): Boolean = try {
+    fun userInstalledCa(): Boolean? = try {
         val store = KeyStore.getInstance("AndroidCAStore")
         store.load(null)
         val aliases = store.aliases()
         generateSequence { if (aliases.hasMoreElements()) aliases.nextElement() else null }
             .any { it.startsWith("user:") }
-    } catch (_: Exception) { false }
+    } catch (_: Exception) { null }
+
+    /** Retained for source compatibility: `false` also when the store could not be read. */
+    @JvmStatic
+    fun hasUserInstalledCa(): Boolean = userInstalledCa() == true
 }

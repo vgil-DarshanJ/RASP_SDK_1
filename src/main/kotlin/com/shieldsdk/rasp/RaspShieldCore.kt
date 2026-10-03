@@ -546,46 +546,34 @@ object RaspShieldCore {
         runAsync(context, callback, ::checkVpnBlocking)
 
     /**
-     * `true` when the native system-proxy check found nothing, so the
-     * (network-blocking) TLS-pin corroboration should run at all — same
-     * short-circuit shape as the Dart `MitmDetector`: the cheap check
-     * first, the expensive one only when it's still inconclusive.
-     * Requires [configureCertificatePin] to have been called; otherwise
-     * this check reports on the native-only signal alone, same as before
-     * Phase 8.
+     * Proxy / https proxy / user-installed CA → DETECTED on its own; no
+     * signal and no pin → SECURE with `pin_not_configured` evidence; with a
+     * pin, the SPKI check decides. Probes that could not run → UNKNOWN. See
+     * [RaspMitmAnalysis].
+     *
+     * [pinHost] + [pins] (`sha256/<Base64>` SPKI pins) come from the session
+     * config; when they are not given, the pins set with
+     * [configureCertificatePin] / [configureCertificatePins] are used. The pin
+     * check is real network I/O — call off the main thread, or use
+     * [checkMitmAsync].
      */
-    fun checkMitmBlocking(context: Context): RaspCheckResult = runGuarded("mitm") {
-        val networkSignals = RaspNetworkProbes.mitmSignals(context)
-        if (networkSignals.isNotEmpty()) {
-            return@runGuarded RaspCheckResult.detected(
-                "mitm", networkSignals.map { RaspEvidence("network_signal", it) }
-            )
+    @JvmOverloads
+    fun checkMitmBlocking(context: Context, pinHost: String? = null, pins: List<String> = emptyList()): RaspCheckResult =
+        runGuarded("mitm") {
+            val pin = if (!pinHost.isNullOrBlank() && pins.isNotEmpty()) {
+                RaspMitmAnalysis.PinConfig(pinHost.trim(), RaspCertificatePinProbes.PinSet(pins.map { it.trim() }.toSet()))
+            } else {
+                val host = pinnedHost
+                val configured = pinnedCertificatePins
+                if (host != null && configured != null && configured.isConfigured()) RaspMitmAnalysis.PinConfig(host, configured) else null
+            }
+            RaspMitmAnalysis.evaluate(RaspNetworkProbes.mitmProbe(context), pin) {
+                RaspCertificatePinProbes.checkCertificatePinDetailed(it.host, it.pins)
+            }
         }
-
-        val host = pinnedHost
-        val pins = pinnedCertificatePins
-        if (host == null || pins == null || !pins.isConfigured()) {
-            return@runGuarded RaspCheckResult.unavailable("mitm", "No SPKI pin set is configured")
-        }
-
-        // Real network I/O — this branch only runs when the cheap native
-        // check found nothing AND a pin is configured. Call off the main
-        // thread; use checkMitmAsync from UI code.
-        when (RaspCertificatePinProbes.checkCertificatePin(host, pins)) {
-            CertificatePinCheckResult.MISMATCH -> RaspCheckResult.detected(
-                "mitm", listOf(RaspEvidence("source", "tls_pinning_probe"))
-            )
-            CertificatePinCheckResult.MATCH -> RaspCheckResult.secure("mitm")
-            CertificatePinCheckResult.REVOKED -> RaspCheckResult.detected(
-                "mitm", listOf(RaspEvidence("source", "tls_spki_revoked"))
-            )
-            CertificatePinCheckResult.NOT_ATTEMPTED -> RaspCheckResult.unavailable("mitm", "TLS pin probe did not complete")
-            CertificatePinCheckResult.INVALID_CONFIGURATION -> RaspCheckResult.unavailable("mitm", "TLS pin configuration is invalid")
-        }
-    }
 
     fun checkMitmAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
-        runAsync(context, callback, ::checkMitmBlocking)
+        runAsync(context, callback) { checkMitmBlocking(it) }
 
     // ── High-risk IP / geo reputation ─────────────────────────────────
 
