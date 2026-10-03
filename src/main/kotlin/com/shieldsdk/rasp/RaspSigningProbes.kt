@@ -94,11 +94,47 @@ public object RaspSigningProbes {
      * signature configuration so tamper detection still means something
      * even with no expected fingerprint configured.
      */
-    fun installDirectoryMissing(context: Context): Boolean = try {
+    /** `null` when the install directory could not be checked. */
+    fun installDirectoryMissing(context: Context): Boolean? = try {
         val sourceDir = context.applicationInfo.sourceDir
         sourceDir == null || !java.io.File(sourceDir).exists()
     } catch (e: Exception) {
-        true
+        null
+    }
+
+    const val TAMPER_NOT_CONFIGURED = "not configured"
+
+    /**
+     * `tamper` verdict. Pure.
+     * - install directory missing, or the signing certificate does not match
+     *   the configured one → DETECTED;
+     * - no expected signing certificate configured → UNKNOWN, reason
+     *   "not configured" (nothing was compared, so never SECURE);
+     * - own certificate unreadable → ERROR; install directory not checkable →
+     *   UNKNOWN; otherwise SECURE.
+     */
+    fun tamperVerdict(expectedConfigured: Boolean, mismatch: Boolean?, installMissing: Boolean?): RaspCheckResult {
+        val evidence = listOfNotNull(
+            mismatch?.let { RaspEvidence("signing_certificate_mismatch", it) },
+            RaspEvidence("install_directory_missing", installMissing ?: "unreadable"),
+        )
+        return when {
+            installMissing == true || mismatch == true -> RaspCheckResult.detected("tamper", evidence)
+            !expectedConfigured -> RaspCheckResult(
+                "tamper", RaspCheckStatus.UNKNOWN,
+                evidence + RaspEvidence("expected_signing_certificate", "not_configured",
+                    "Set RaspLeanConfig.expectedSigningCertSha256 / configureExpectedSigningCertificate()"),
+                reason = TAMPER_NOT_CONFIGURED,
+            )
+            mismatch == null -> RaspCheckResult(
+                "tamper", RaspCheckStatus.ERROR, evidence,
+                reason = "Could not read this build's own signing certificate",
+            )
+            installMissing == null -> RaspCheckResult(
+                "tamper", RaspCheckStatus.UNKNOWN, evidence, reason = "Install directory could not be checked",
+            )
+            else -> RaspCheckResult.secure("tamper", evidence)
+        }
     }
 
     private val trustedInstallers = setOf(
