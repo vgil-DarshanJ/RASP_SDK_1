@@ -1,6 +1,7 @@
 package com.shieldsdk.rasp
 
 import android.content.Context
+import android.content.pm.PackageManager
 
 /**
  * Xposed/LSPosed, Magisk manager, Lucky Patcher, GameGuardian, and similar
@@ -32,21 +33,54 @@ public object RaspReverseEngineeringToolsProbe {
         "com.noshufou.android.su",
     )
 
+    /** The package scan: [found] packages, and [failedPackages] whose query failed for a reason other than "not installed". */
+    data class Observation(val found: List<String>, val failedPackages: List<String>)
+
     /**
-     * Every targeted package that is actually present, as evidence — not
-     * just a bare boolean, matching every other detector's evidence-first
-     * convention in this SDK.
+     * Queries every targeted package. If the PackageManager itself cannot be
+     * reached this throws (→ ERROR in `checkReverseEngineeringToolsBlocking`).
      */
-    fun detectedPackages(context: Context): List<String> = try {
+    fun observe(context: Context): Observation {
         val pm = context.packageManager
-        reTools.filter { pkg ->
+        val found = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+        for (pkg in reTools) {
             try {
                 pm.getApplicationInfo(pkg, 0)
-                true
+                found.add(pkg)
+            } catch (e: PackageManager.NameNotFoundException) {
+                // Not installed (or not visible): not detected.
             } catch (e: Exception) {
-                false
+                failed.add(pkg)
             }
         }
+        return Observation(found, failed)
+    }
+
+    /**
+     * `re_tools` verdict. Pure. A targeted package found → DETECTED; none
+     * found but a query failed → UNKNOWN, never SECURE; otherwise SECURE.
+     */
+    fun evaluate(o: Observation): RaspCheckResult {
+        val evidence = o.found.map { RaspEvidence("re_tool_package", it) } +
+            o.failedPackages.map { RaspEvidence("query_failed", it) }
+        return when {
+            o.found.isNotEmpty() -> RaspCheckResult.detected("re_tools", evidence)
+            o.failedPackages.isNotEmpty() -> RaspCheckResult(
+                "re_tools", RaspCheckStatus.UNKNOWN, evidence,
+                reason = "${o.failedPackages.size} package check(s) failed",
+            )
+            else -> RaspCheckResult.secure("re_tools", evidence)
+        }
+    }
+
+    /**
+     * Every targeted package that is present. Legacy boolean-style helper:
+     * a failed scan gives an empty list here; the `re_tools` detector uses
+     * [observe] + [evaluate] instead, which report it as UNKNOWN / ERROR.
+     */
+    fun detectedPackages(context: Context): List<String> = try {
+        observe(context).found
     } catch (e: Exception) {
         emptyList()
     }

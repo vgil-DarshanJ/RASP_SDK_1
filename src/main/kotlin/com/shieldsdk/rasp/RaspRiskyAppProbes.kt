@@ -36,8 +36,20 @@ public object RaspRiskyAppProbes {
         "com.saurik.substrate" to "instrumentation_framework",
     )
 
-    fun evidence(context: Context): List<RiskyAppSignal> {
+    /** The package scan: matching [signals], and [failedPackages] whose query failed for a reason other than "not installed". */
+    data class Observation(val signals: List<RiskyAppSignal>, val failedPackages: List<String>)
+
+    /** Signals only (failed queries dropped); see [observe]. */
+    fun evidence(context: Context): List<RiskyAppSignal> = observe(context).signals
+
+    /**
+     * Queries every listed package. A query that fails for a reason other
+     * than "not installed" is recorded in [Observation.failedPackages]; if
+     * the PackageManager itself cannot be reached this throws (→ ERROR).
+     */
+    fun observe(context: Context): Observation {
         val results = mutableListOf<RiskyAppSignal>()
+        val failed = mutableListOf<String>()
         val pm = context.packageManager
 
         for ((pkg, category) in knownRiskyPackages) {
@@ -47,10 +59,7 @@ public object RaspRiskyAppProbes {
             } catch (e: PackageManager.NameNotFoundException) {
                 // Not installed — genuinely not detected, no evidence entry.
             } catch (e: Exception) {
-                // Query failed for a reason other than "not installed" —
-                // silently omitted here, same as the original; the facade
-                // layer reports ERROR only when NOTHING could be evaluated
-                // (see RaspShieldCore.checkRiskyAppBlocking).
+                failed.add(pkg)
             }
         }
 
@@ -62,9 +71,30 @@ public object RaspRiskyAppProbes {
             // Accessibility is an assistive technology. Presence alone is
             // neither malicious nor sufficient to label an app risky.
         } catch (e: Exception) {
-            // Accessibility query failed — omitted, same reasoning as above.
+            // Accessibility query failed — omitted: it never decides the verdict.
         }
 
-        return results
+        return Observation(results, failed)
+    }
+
+    /**
+     * `risky_app` verdict. Pure. A listed package found → DETECTED (also when
+     * other queries failed); no match but a query failed → UNKNOWN, never
+     * SECURE; otherwise SECURE.
+     */
+    fun evaluate(o: Observation): RaspCheckResult {
+        val evidence = o.signals.map {
+            val key = if (it.category == RiskyAppCategory.KNOWN_RISKY_PACKAGE)
+                "known_risky_package" else "suspicious_accessibility_service"
+            RaspEvidence(key, it.pkg, it.reason)
+        } + o.failedPackages.map { RaspEvidence("query_failed", it) }
+        return when {
+            o.signals.isNotEmpty() -> RaspCheckResult.detected("risky_app", evidence)
+            o.failedPackages.isNotEmpty() -> RaspCheckResult(
+                "risky_app", RaspCheckStatus.UNKNOWN, evidence,
+                reason = "${o.failedPackages.size} package check(s) failed",
+            )
+            else -> RaspCheckResult.secure("risky_app", evidence)
+        }
     }
 }

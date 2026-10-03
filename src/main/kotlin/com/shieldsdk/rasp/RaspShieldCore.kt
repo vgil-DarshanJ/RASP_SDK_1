@@ -209,38 +209,7 @@ object RaspShieldCore {
 
     fun checkDeviceFingerprintBlocking(context: Context): RaspCheckResult =
         runGuarded("device_fingerprint") {
-            val fp = RaspDeviceFingerprintProbes.readFingerprint(context)
-                ?: return@runGuarded RaspCheckResult.unknown(
-                    "device_fingerprint", "Device fingerprint security state could not be read"
-                )
-
-            val failedChecks = buildList {
-                if (fp.screenLockEnabled == false) add("no_screen_lock")
-                if (fp.adbEnabled) add("adb_enabled")
-                if (fp.selinuxEnforcing == false) add("selinux_permissive")
-                if (fp.installSource == "unknown") add("unknown_install_source")
-            }
-
-            val unknownChecks = buildList {
-                if (fp.screenLockEnabled == null) add("screen_lock_unknown")
-                if (fp.selinuxEnforcing == null) add("selinux_unknown")
-            }
-            val evidence = failedChecks.map { RaspEvidence("device_fingerprint_signal", it) } +
-                unknownChecks.map { RaspEvidence("device_fingerprint_unknown", it) } +
-                listOf(
-                    RaspEvidence("model", fp.model),
-                    RaspEvidence("manufacturer", fp.manufacturer),
-                    RaspEvidence("install_source", fp.installSource),
-                )
-
-            when {
-                failedChecks.isNotEmpty() -> RaspCheckResult.detected("device_fingerprint", evidence)
-                unknownChecks.isNotEmpty() -> RaspCheckResult(
-                    "device_fingerprint", RaspCheckStatus.UNKNOWN, evidence,
-                    "Device fingerprint contains unreadable security state"
-                )
-                else -> RaspCheckResult.secure("device_fingerprint", evidence)
-            }
+            RaspDeviceFingerprintProbes.evaluate(RaspDeviceFingerprintProbes.readFingerprint(context))
         }
 
     fun checkDeviceFingerprintAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -415,10 +384,7 @@ object RaspShieldCore {
 
     fun checkReverseEngineeringToolsBlocking(context: Context): RaspCheckResult =
         runGuarded("re_tools") {
-            val found = RaspReverseEngineeringToolsProbe.detectedPackages(context)
-            val evidence = found.map { RaspEvidence("re_tool_package", it) }
-            if (found.isNotEmpty()) RaspCheckResult.detected("re_tools", evidence)
-            else RaspCheckResult.secure("re_tools", evidence)
+            RaspReverseEngineeringToolsProbe.evaluate(RaspReverseEngineeringToolsProbe.observe(context))
         }
 
     fun checkReverseEngineeringToolsAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -695,22 +661,9 @@ object RaspShieldCore {
     // Risky app / app intelligence (Phase 6)
     // ═══════════════════════════════════════════════════════════════════
 
+    /** A failed package query is UNKNOWN; an unreachable PackageManager is ERROR. See [RaspRiskyAppProbes.evaluate]. */
     fun checkRiskyAppBlocking(context: Context): RaspCheckResult = runGuarded("risky_app") {
-        val signals = RaspRiskyAppProbes.evidence(context)
-        val known = signals.filter { it.category == RiskyAppCategory.KNOWN_RISKY_PACKAGE }
-        val suspicious = signals.filter { it.category == RiskyAppCategory.SUSPICIOUS_BEHAVIOR }
-
-        val evidence = signals.map {
-            val key = if (it.category == RiskyAppCategory.KNOWN_RISKY_PACKAGE)
-                "known_risky_package" else "suspicious_accessibility_service"
-            RaspEvidence(key, it.pkg, it.reason)
-        }
-
-        if (known.isNotEmpty() || suspicious.isNotEmpty()) {
-            RaspCheckResult.detected("risky_app", evidence)
-        } else {
-            RaspCheckResult.secure("risky_app", evidence)
-        }
+        RaspRiskyAppProbes.evaluate(RaspRiskyAppProbes.observe(context))
     }
 
     fun checkRiskyAppAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
