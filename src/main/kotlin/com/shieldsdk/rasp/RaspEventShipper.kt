@@ -69,6 +69,20 @@ public object RaspEventShipper {
     @Volatile
     private var envelopeBuilder: RaspEvidenceEnvelope? = null
 
+    /** Per-process delivery (lazy): device registration + response handling for queued envelopes. */
+    @Volatile
+    private var delivery: RaspEnvelopeDelivery? = null
+
+    private val deliveryStats = RaspDeliveryStats()
+
+    /**
+     * Envelopes that left the queue since the process started, by reason:
+     * `delivered`, `dropped_invalid` (400/422), `dropped_expired` (older than
+     * 7 days), `dropped_unauthorized` (401 again after re-registration),
+     * `dropped_rejected` (other 4xx), and `re_registrations`.
+     */
+    public fun deliveryStats(): Map<String, Long> = deliveryStats.snapshot()
+
     /** `true` when the JSON parsed successfully and shipping is possible. */
     public fun configure(credentialJson: String): Boolean {
         val parsed = RaspEventCredentialParser.parse(credentialJson)
@@ -139,6 +153,7 @@ public object RaspEventShipper {
         offlineQueue?.stopFlusher()
         offlineQueue = null
         envelopeBuilder = null
+        delivery = null
         useEvidenceEnvelope = false
     }
 
@@ -175,19 +190,20 @@ public object RaspEventShipper {
      * New path: Evidence Envelope + device key + offline queue.
      *
      * Every envelope is persisted to [RaspOfflineQueue] first and only then
-     * sent; the queue removes it only after [postEnvelope] reports a 2xx.
-     * Nothing is sent outside the queue, so a failed send is already queued.
+     * sent. The first delivery registers the device key
+     * (`POST /v1/devices/register`); what each response does to a queued
+     * envelope is [RaspEnvelopeDelivery]'s table.
      */
     private fun shipWithEvidenceEnvelopes(
         appContext: Context,
-        credential: RaspEventCredential,
+        @Suppress("UNUSED_PARAMETER") credential: RaspEventCredential,
         results: List<RaspCheckResult>,
     ) {
         val queue = synchronized(this) {
             offlineQueue ?: RaspOfflineQueue(appContext).also { offlineQueue = it }
         }
-        // Sender uses the credential configured now; replaces any earlier one.
-        queue.startFlusher { envelopeJson -> postEnvelope(credential, envelopeJson) }
+        // Delivery reads the credential configured at send time.
+        queue.startFlusher(delivery(appContext)::deliver)
 
         results.chunked(MAX_BATCH_SIZE).forEach { chunk ->
             executor.execute {
@@ -218,6 +234,18 @@ public object RaspEventShipper {
         }
     }
 
+    private fun delivery(appContext: Context): RaspEnvelopeDelivery = synchronized(this) {
+        delivery ?: run {
+            val key = deviceKey ?: RaspDeviceKey(appContext).also { deviceKey = it }
+            val registrar = RaspDeviceRegistrar(
+                key.asRegistrationKeySource(),
+                EncryptedRegistrationStore(appContext),
+                appContext.packageName,
+            )
+            RaspEnvelopeDelivery({ credential }, registrar, stats = deliveryStats).also { delivery = it }
+        }
+    }
+
     /**
      * ISO-8601 UTC with milliseconds (`2026-10-01T12:00:00.000Z`) — what the
      * backend's `observedAt` (zod `datetime()`) accepts. `SimpleDateFormat`
@@ -228,9 +256,6 @@ public object RaspEventShipper {
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }
             .format(java.util.Date(epochMillis))
-
-    /** The only responses that count as delivered: HTTP 2xx. */
-    internal fun isDelivered(httpStatus: Int): Boolean = httpStatus in 200..299
 
     /** Legacy path: HMAC-signed batch POST (unchanged behavior). */
     private fun shipLegacyHmac(
@@ -248,43 +273,6 @@ public object RaspEventShipper {
                     notifyLoggerOnly("event_shipper", e.message ?: "Unknown shipping failure")
                 }
             }
-        }
-    }
-
-    /**
-     * Posts a single Evidence Envelope. `true` only for HTTP 2xx; any other
-     * status or an exception returns `false`, which keeps the envelope queued.
-     */
-    internal fun postEnvelope(credential: RaspEventCredential, envelopeJson: String): Boolean {
-        val bodyBytes = envelopeJson.toByteArray(Charsets.UTF_8)
-        // Evidence Envelope path: no X-Timestamp, no X-Signature (HMAC).
-        // The envelope itself carries its own ECDSA signature + monotonic counter + nonce.
-        // Backend identifies this path by the presence of "envelopeVersion" in the body.
-        var connection: HttpURLConnection? = null
-        try {
-            val url = URL(credential.ingestionUrl)
-            connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("X-Api-Key", credential.apiKey)
-                // No X-Timestamp, no X-Signature — envelope is self-authenticating
-            }
-            connection.outputStream.use { it.write(bodyBytes) }
-
-            val code = connection.responseCode
-            if (!isDelivered(code)) {
-                notifyLoggerOnly("event_shipper", "Envelope ingestion returned HTTP $code")
-                return false
-            }
-            return true
-        } catch (e: Exception) {
-            notifyLoggerOnly("event_shipper", "Envelope post failed: ${e.message}")
-            return false
-        } finally {
-            connection?.disconnect()
         }
     }
 
