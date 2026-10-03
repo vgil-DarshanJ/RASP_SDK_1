@@ -22,10 +22,15 @@ import java.security.SecureRandom
  * nothing SIM-related is uploaded beyond SIM counts and the change time.
  *
  * - No READ_PHONE_STATE → UNAVAILABLE.
- * - First run → baseline stored, UNKNOWN (never SECURE).
+ * - First run (no baseline stored yet) → the baseline is stored, UNKNOWN with
+ *   reason "baseline stored" (never SECURE).
  * - Fingerprint differs → DETECTED; it stays DETECTED (across restarts) until
  *   the host calls [acknowledgeChange] — e.g. after re-verifying the customer.
  * - Same fingerprint, nothing pending → SECURE.
+ * - Stored baseline cannot be read → ERROR (it is not replaced by a new one).
+ *
+ * [resetBaseline] forgets the baseline, for testing only: it is refused unless
+ * the app is a debuggable build.
  */
 object RaspSimChangeProbes {
 
@@ -41,10 +46,15 @@ object RaspSimChangeProbes {
     interface Store {
         /** The per-install salt, created on first use; `null` if storage is unavailable. */
         fun salt(): ByteArray?
+        /** `null` when no baseline is stored yet; throws when storage cannot be read. */
         fun load(): Baseline?
         /** `true` once written. */
         fun save(baseline: Baseline): Boolean
+        /** Removes the baseline (the salt stays). `true` once removed. */
+        fun clear(): Boolean
     }
+
+    const val REASON_BASELINE_STORED = "baseline stored"
 
     data class Observation(
         val permissionGranted: Boolean,
@@ -71,7 +81,13 @@ object RaspSimChangeProbes {
         )
         val salt = store.salt() ?: return RaspCheckResult.error(DETECTOR_ID, "Secure storage unavailable")
         val hash = fingerprint(salt, sims)
-        val previous = store.load()
+        val previous = try {
+            store.load()
+        } catch (e: Exception) {
+            // Never treat an unreadable baseline as a first run: storing a new
+            // one would hide a SIM change.
+            return RaspCheckResult.error(DETECTOR_ID, "Could not read SIM baseline")
+        }
 
         if (previous == null) {
             if (!store.save(Baseline(hash, sims.size, null))) {
@@ -79,7 +95,7 @@ object RaspSimChangeProbes {
             }
             return RaspCheckResult(
                 DETECTOR_ID, RaspCheckStatus.UNKNOWN, listOf(RaspEvidence("sim_count", sims.size)),
-                reason = "First run: SIM baseline stored",
+                reason = REASON_BASELINE_STORED,
             )
         }
         if (previous.hash != hash) {
@@ -108,10 +124,19 @@ object RaspSimChangeProbes {
 
     /** Accepts the current SIMs as the new baseline. `false` if nothing was pending or storage failed. */
     fun acknowledgeChange(store: Store): Boolean {
-        val current = store.load() ?: return false
+        val current = try { store.load() } catch (e: Exception) { null } ?: return false
         if (current.changeDetectedAtMillis == null) return false
         return store.save(current.copy(changeDetectedAtMillis = null))
     }
+
+    /**
+     * Forgets the stored baseline, so the next run stores a new one and reports
+     * UNKNOWN "baseline stored". For testing only: refused (returns `false`,
+     * nothing changed) unless [debuggableBuild]. Production apps accept a new
+     * SIM with [acknowledgeChange] instead.
+     */
+    fun resetBaseline(store: Store, debuggableBuild: Boolean): Boolean =
+        debuggableBuild && store.clear()
 
     fun observe(context: Context): Observation {
         if (context.checkSelfPermission(PERMISSION) != PackageManager.PERMISSION_GRANTED) {
@@ -158,7 +183,8 @@ object RaspSimChangeProbes {
             null
         }
 
-        override fun load(): Baseline? = try {
+        /** Throws when the encrypted preferences cannot be read (see [Store.load]). */
+        override fun load(): Baseline? =
             prefs.getString("hash", null)?.let { hash ->
                 Baseline(
                     hash,
@@ -166,8 +192,11 @@ object RaspSimChangeProbes {
                     prefs.getLong("changed_at", -1L).takeIf { it >= 0 },
                 )
             }
+
+        override fun clear(): Boolean = try {
+            prefs.edit().remove("hash").remove("sim_count").remove("changed_at").commit()
         } catch (e: Exception) {
-            null
+            false
         }
 
         override fun save(baseline: Baseline): Boolean = try {
