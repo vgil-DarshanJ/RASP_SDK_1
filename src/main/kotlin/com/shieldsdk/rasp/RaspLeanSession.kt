@@ -47,6 +47,10 @@ public data class RaspLeanConfig(
     val tamperDetection: Boolean = false, val untrustedInstallSourceDetection: Boolean = false,
     val repackagingDetection: Boolean = false, val expectedSigningCertSha256: String? = null,
     val vpnDetection: Boolean = false, val mitmDetection: Boolean = false,
+    /** Host for the `mitm` SPKI pin check (e.g. your API host); `null` = no pin check. */
+    val certificatePinHost: String? = null,
+    /** Accepted SPKI pins for [certificatePinHost], `sha256/<Base64>`; empty = no pin check. */
+    val certificatePins: List<String> = emptyList(),
     val highRiskIpDetection: Boolean = false, val overlayDetection: Boolean = false,
     val accessibilityDetection: Boolean = false, val externalDisplayDetection: Boolean = false,
     val screenshotEventDetection: Boolean = false,
@@ -159,7 +163,9 @@ public class RaspLeanSession private constructor(
         add(config.untrustedInstallSourceDetection, "untrusted_install_source") { RaspShieldCore.checkUntrustedInstallSourceBlocking(appContext) }
         add(config.repackagingDetection, "repackage") { RaspShieldCore.checkRepackagingBlocking(appContext) }
         add(config.vpnDetection, "vpn") { RaspShieldCore.checkVpnBlocking(appContext) }
-        add(config.mitmDetection, "mitm") { RaspShieldCore.checkMitmBlocking(appContext) }
+        add(config.mitmDetection, "mitm") {
+            RaspShieldCore.checkMitmBlocking(appContext, config.certificatePinHost, config.certificatePins)
+        }
         add(config.highRiskIpDetection, "high_risk_ip") { RaspShieldCore.checkHighRiskIpBlocking(appContext) }
         add(config.overlayDetection, "overlay") { RaspShieldCore.checkOverlayBlocking(appContext, screenGuard) }
         add(config.accessibilityDetection, "accessibility") { RaspShieldCore.checkAccessibilityBlocking(appContext) }

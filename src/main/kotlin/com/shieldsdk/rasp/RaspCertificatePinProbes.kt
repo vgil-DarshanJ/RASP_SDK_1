@@ -24,19 +24,31 @@ public object RaspCertificatePinProbes {
         fun isConfigured(): Boolean = current.isNotEmpty() || backup.isNotEmpty()
     }
 
+    /** A pin check's [result] plus the SPKI pins the server actually presented (leaf first). */
+    public data class PinCheck(val result: CertificatePinCheckResult, val observedPins: List<String> = emptyList())
+
     @JvmStatic
     fun checkCertificatePin(
         host: String?,
         pins: PinSet?,
         port: Int = 443,
         timeoutMs: Int = 5_000,
-    ): CertificatePinCheckResult {
+    ): CertificatePinCheckResult = checkCertificatePinDetailed(host, pins, port, timeoutMs).result
+
+    /** As [checkCertificatePin], also returning the observed chain's pins (public data) for evidence. */
+    @JvmStatic
+    fun checkCertificatePinDetailed(
+        host: String?,
+        pins: PinSet?,
+        port: Int = 443,
+        timeoutMs: Int = 5_000,
+    ): PinCheck {
         if (host.isNullOrBlank() || pins == null || !pins.isConfigured() || timeoutMs <= 0) {
-            return CertificatePinCheckResult.INVALID_CONFIGURATION
+            return PinCheck(CertificatePinCheckResult.INVALID_CONFIGURATION)
         }
         val accepted = pins.current + pins.backup
         if (accepted.any { !isPin(it) } || pins.revoked.any { !isPin(it) }) {
-            return CertificatePinCheckResult.INVALID_CONFIGURATION
+            return PinCheck(CertificatePinCheckResult.INVALID_CONFIGURATION)
         }
 
         var connection: HttpsURLConnection? = null
@@ -49,16 +61,17 @@ public object RaspCertificatePinProbes {
             }
             connection.connect()
             val chain = connection.serverCertificates.filterIsInstance<X509Certificate>()
-            val observed = chain.map(::spkiPin).toSet()
-            when {
+            val observed = chain.map(::spkiPin)
+            val result = when {
                 observed.any { it in pins.revoked } -> CertificatePinCheckResult.REVOKED
                 observed.any { it in accepted } -> CertificatePinCheckResult.MATCH
                 else -> CertificatePinCheckResult.MISMATCH
             }
+            PinCheck(result, observed)
         } catch (_: Exception) {
             // Includes hostname, platform trust and network failures. None is
-            // proof of a clean transport, so callers map this to UNAVAILABLE.
-            CertificatePinCheckResult.NOT_ATTEMPTED
+            // proof of a clean transport, so callers map this to UNKNOWN.
+            PinCheck(CertificatePinCheckResult.NOT_ATTEMPTED)
         } finally {
             connection?.disconnect()
         }
