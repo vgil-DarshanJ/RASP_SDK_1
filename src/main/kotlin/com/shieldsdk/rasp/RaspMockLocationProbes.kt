@@ -19,8 +19,9 @@ import java.util.concurrent.atomic.AtomicReference
  * | `isMock` on the snapshot | `Location.isMock()` (API 31+) / `isFromMockProvider()` (API 18–30) via [RaspLocationSnapshot.fromLocation], or the host's own flag (e.g. Flutter geolocator `Position.isMocked`) | decides |
  * | mock location apps | API 23+: installed apps requesting `ACCESS_MOCK_LOCATION` whose AppOps `mock_location` mode is ALLOWED (the app picked in Developer options); API ≤ 22: `Settings.Secure.ALLOW_MOCK_LOCATION` = 1 | evidence only |
  *
- * Verdict: `isMock` true → DETECTED; false → SECURE; not supplied → UNKNOWN
- * (where the fix came from cannot be decided). A selected mock-location app
+ * Verdict: no location supplied by the host → UNAVAILABLE; a location whose
+ * `isMock` is true → DETECTED; false → SECURE; a location without its mock
+ * flag → UNKNOWN (where the fix came from cannot be decided). A selected mock-location app
  * is reported but does not decide on its own: it shows a mock provider is
  * allowed, not that this particular fix came from it.
  */
