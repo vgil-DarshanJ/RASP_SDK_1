@@ -23,10 +23,50 @@ public object RaspDeviceFingerprintProbes {
         val hardware: String,
         val buildFingerprint: String,
         val screenLockEnabled: Boolean?,
-        val adbEnabled: Boolean,
-        val installSource: String,
+        /** `null` when the ADB setting could not be read (never read as "off"). */
+        val adbEnabled: Boolean?,
+        /** Installer package, `"unknown"` when none is recorded, `null` when it could not be read. */
+        val installSource: String?,
         val selinuxEnforcing: Boolean?,
     )
+
+    /**
+     * `device_fingerprint` verdict. Pure. Any failed check → DETECTED; else
+     * any check that could not be read → UNKNOWN; else SECURE. `null`
+     * (fingerprint not read at all) → UNKNOWN.
+     */
+    fun evaluate(fp: Fingerprint?): RaspCheckResult {
+        if (fp == null) {
+            return RaspCheckResult.unknown("device_fingerprint", "Device fingerprint security state could not be read")
+        }
+        val failedChecks = buildList {
+            if (fp.screenLockEnabled == false) add("no_screen_lock")
+            if (fp.adbEnabled == true) add("adb_enabled")
+            if (fp.selinuxEnforcing == false) add("selinux_permissive")
+            if (fp.installSource == "unknown") add("unknown_install_source")
+        }
+        val unknownChecks = buildList {
+            if (fp.screenLockEnabled == null) add("screen_lock_unknown")
+            if (fp.adbEnabled == null) add("adb_unknown")
+            if (fp.selinuxEnforcing == null) add("selinux_unknown")
+            if (fp.installSource == null) add("install_source_unknown")
+        }
+        val evidence = failedChecks.map { RaspEvidence("device_fingerprint_signal", it) } +
+            unknownChecks.map { RaspEvidence("device_fingerprint_unknown", it) } +
+            listOf(
+                RaspEvidence("model", fp.model),
+                RaspEvidence("manufacturer", fp.manufacturer),
+                RaspEvidence("install_source", fp.installSource ?: "unreadable"),
+            )
+        return when {
+            failedChecks.isNotEmpty() -> RaspCheckResult.detected("device_fingerprint", evidence)
+            unknownChecks.isNotEmpty() -> RaspCheckResult(
+                "device_fingerprint", RaspCheckStatus.UNKNOWN, evidence,
+                "Device fingerprint contains unreadable security state",
+            )
+            else -> RaspCheckResult.secure("device_fingerprint", evidence)
+        }
+    }
 
     /**
      * `null` only if the whole read failed catastrophically (should not
@@ -50,7 +90,7 @@ public object RaspDeviceFingerprintProbes {
         val adbEnabled = try {
             Settings.Global.getInt(context.contentResolver, Settings.Global.ADB_ENABLED, 0) != 0
         } catch (e: Exception) {
-            false
+            null
         }
 
         val installSource = try {
@@ -62,7 +102,7 @@ public object RaspDeviceFingerprintProbes {
                 context.packageManager.getInstallerPackageName(context.packageName)
             } ?: "unknown"
         } catch (e: Exception) {
-            "unknown"
+            null
         }
 
         Fingerprint(
@@ -82,11 +122,9 @@ public object RaspDeviceFingerprintProbes {
     }
 
     /**
-     * Bounded via [RaspProcessUtils] (was an unbounded `Runtime.exec` in
-     * the original — see that object's doc for why this matters). Falls
-     * back to `/sys/fs/selinux/enforce`, then to `true` (fail toward
-     * "assume enforcing," the conservative/secure default) if neither
-     * source answers — unchanged from the original's fallback chain.
+     * `getenforce` (bounded via [RaspProcessUtils]), then
+     * `/sys/fs/selinux/enforce`. `null` when neither answers — the state is
+     * then unknown; it is never assumed to be enforcing.
      */
     fun isSELinuxEnforcing(): Boolean? {
         val execLine = RaspProcessUtils.firstLineOf(arrayOf("getenforce"))
