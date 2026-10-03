@@ -91,7 +91,9 @@ public object RaspCertificatePinProbes {
             MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
         )
 
-    internal fun isPin(value: String): Boolean =
-        value.startsWith("sha256/") && value.length > "sha256/".length &&
-            RaspBase64.decode(value.removePrefix("sha256/")) != null
+    /** `sha256/` + Base64 of exactly 32 bytes (a SHA-256 digest); anything else is invalid. */
+    @JvmStatic
+    fun isPin(value: String): Boolean =
+        value.startsWith("sha256/") &&
+            RaspBase64.decode(value.removePrefix("sha256/"))?.size == 32
 }
