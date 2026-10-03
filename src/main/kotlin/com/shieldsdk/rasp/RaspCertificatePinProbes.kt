@@ -69,13 +69,16 @@ public object RaspCertificatePinProbes {
     fun checkCertificatePin(host: String?, pin: String?, port: Int = 443, timeoutMs: Int = 5_000): CertificatePinCheckResult =
         checkCertificatePin(host, pin?.let { PinSet(setOf(it)) }, port, timeoutMs)
 
+    // RaspBase64, not java.util.Base64 (API 26; minSdk is 23) and not
+    // android.util.Base64 (a stub in JVM unit tests, which would make every
+    // pin look malformed there).
     @JvmStatic
     fun spkiPin(certificate: X509Certificate): String =
-        "sha256/" + java.util.Base64.getEncoder().encodeToString(
+        "sha256/" + RaspBase64.encode(
             MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
         )
 
-    private fun isPin(value: String): Boolean =
+    internal fun isPin(value: String): Boolean =
         value.startsWith("sha256/") && value.length > "sha256/".length &&
-            runCatching { java.util.Base64.getDecoder().decode(value.removePrefix("sha256/")) }.isSuccess
+            RaspBase64.decode(value.removePrefix("sha256/")) != null
 }
