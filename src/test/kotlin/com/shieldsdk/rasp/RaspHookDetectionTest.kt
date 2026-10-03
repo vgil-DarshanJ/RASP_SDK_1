@@ -214,6 +214,75 @@ class RaspHookDetectionTest {
         assertTrue(r.evidence.any { it.key == "maps_readable" && it.value == false })
     }
 
+    // ── Task 4.7: which signals and lines produced the verdict ──────────
+
+    private fun lines(r: RaspCheckResult, signal: String) =
+        r.evidence.filter { it.key == "hook_signal_line" && it.note == signal }.map { it.value as String }
+
+    @Test
+    fun `DETECTED by the hard signal names it and the matching maps line`() {
+        val r = result(cleanMaps + "\n" + lsposedLib)
+        assertEquals(RaspCheckStatus.DETECTED, r.status)
+        assertEquals(listOf("hook_framework_lib"), r.evidence.first { it.key == "detected_by" }.value)
+        val matched = lines(r, "hook_framework_lib")
+        assertEquals(1, matched.size)
+        assertTrue(matched.single(), matched.single().endsWith("/data/adb/lspd/lib/liblspd.so"))
+        assertTrue(matched.single().length <= RaspHookAnalysis.EVIDENCE_LINE_MAX)
+    }
+
+    @Test
+    fun `DETECTED by two soft signals names both, with at most 3 lines each`() {
+        val r = result(cleanMaps + "\n" + manyRwx + "\n" + tmpExec)
+        assertEquals(RaspCheckStatus.DETECTED, r.status)
+        assertEquals(listOf("hook_suspicious_lib_path", "hook_rwx_mapping"), r.evidence.first { it.key == "detected_by" }.value)
+        assertEquals(listOf("7f9d001000-7f9d100000 r-xp 00000000 fd:00 7777 /data/local/tmp/libpayload.so"),
+            lines(r, "hook_suspicious_lib_path"))
+        val rwx = lines(r, "hook_rwx_mapping")
+        assertEquals(RaspHookAnalysis.LINES_PER_SIGNAL, rwx.size) // 13 matched, 3 kept
+        assertTrue(rwx.all { it.contains(" rwxp ") })
+    }
+
+    @Test
+    fun `a hooked method is named in the evidence`() {
+        val r = RaspHookAnalysis.toCheckResult(
+            RaspHookAnalysis.observe(cleanMaps + "\n" + tmpExec, true, listOf("RaspHookProbes.isHookingDetected")),
+        )
+        assertEquals(RaspCheckStatus.DETECTED, r.status)
+        assertEquals(listOf("native method: RaspHookProbes.isHookingDetected"), lines(r, "hook_native_method"))
+    }
+
+    @Test
+    fun `a single soft signal shows its line but no detected_by`() {
+        val r = result(cleanMaps + "\n" + manyRwx)
+        assertEquals(RaspCheckStatus.SECURE, r.status)
+        assertTrue(r.evidence.none { it.key == "detected_by" })
+        assertEquals(3, lines(r, "hook_rwx_mapping").size)
+    }
+
+    @Test
+    fun `evidence lines are at most 80 chars and keep both the start and the path end`() {
+        val long = "7f8a2c3000000-7f8a2c9000000 r-xp 00002000 fd:00 123456789     " +
+            "/data/app/~~AbCdEfGhIjKl==/com.example.someverylongpackagename-XyZ==/lib/arm64/libsomething_long.so"
+        val shown = RaspHookAnalysis.evidenceLine(long)
+        assertEquals(RaspHookAnalysis.EVIDENCE_LINE_MAX, shown.length)
+        assertTrue(shown, shown.startsWith("7f8a2c3000000-7f8a2c9000000 r-"))
+        assertTrue(shown, shown.endsWith("/lib/arm64/libsomething_long.so"))
+        assertTrue(shown.contains("…"))
+        // Short lines only lose their alignment padding.
+        assertEquals("7f9d001000-7f9d100000 r-xp 00000000 fd:00 7777 /data/local/tmp/libpayload.so",
+            RaspHookAnalysis.evidenceLine(tmpExec))
+    }
+
+    @Test
+    fun `thresholds and verdict rule are unchanged`() {
+        assertEquals(12, RaspHookAnalysis.RWX_MAPPING_THRESHOLD)
+        fun rwxLines(n: Int) = (1..n).joinToString("\n") { "7f9e%04x000-7f9e%04x000 rwxp 00000000 00:00 0".format(it, it + 1) }
+        assertTrue("12 rwx regions do not fire", result(rwxLines(12)).evidence.none { it.key == "hook_signal" })
+        assertEquals(listOf("hook_rwx_mapping"), result(rwxLines(13)).evidence.filter { it.key == "hook_signal" }.map { it.value })
+        assertEquals(setOf("hook_framework_lib"), RaspHookAnalysis.hardHookSignals)
+        assertEquals(setOf("hook_rwx_mapping", "hook_suspicious_lib_path", "hook_native_method"), RaspHookAnalysis.softHookSignals)
+    }
+
     @Test
     fun `unreadable maps and no resolvable methods is UNKNOWN`() {
         val r = result(null, nativeHooked = null)

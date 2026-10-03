@@ -169,8 +169,23 @@ class RaspHookProbes(private val context: Context) {
      * | `hook_rwx_mapping` | more than [RaspHookAnalysis.RWX_MAPPING_THRESHOLD] rwx regions | soft |
      * | `hook_native_method` | a critical SDK method reports `native` via reflection | soft |
      */
-    fun observe(): RaspHookAnalysis.Observation =
-        RaspHookAnalysis.observe(readMaps(), nativeMethodHooked())
+    fun observe(): RaspHookAnalysis.Observation {
+        // Method integrity read once: the same reading gives the signal and the
+        // hooked method names written to evidence.
+        val integrity = try {
+            criticalMethodIntegrity()
+        } catch (e: Throwable) {
+            null
+        }
+        val hooked = integrity.orEmpty().filterValues { it == MethodIntegrity.HOOKED }.keys.toList()
+        val nativeHooked = when {
+            integrity == null -> null
+            hooked.isNotEmpty() -> true
+            integrity.values.any { it == MethodIntegrity.INTACT } -> false
+            else -> null
+        }
+        return RaspHookAnalysis.observe(readMaps(), nativeHooked, hooked)
+    }
 
     /**
      * Every hooking signal currently firing, as stable ids.
