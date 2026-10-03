@@ -13,7 +13,8 @@ package com.shieldsdk.rasp
  *    - mismatch or revoked pin → DETECTED (observed pins in evidence);
  *    - match → SECURE (UNKNOWN if a proxy/CA probe could not run);
  *    - check did not complete (network, TLS or hostname failure) → UNKNOWN;
- *    - invalid pin configuration → ERROR.
+ *    - a pin that is not `sha256/` + Base64 of exactly 32 bytes → ERROR
+ *      "invalid pin".
  */
 object RaspMitmAnalysis {
 
@@ -61,8 +62,11 @@ object RaspMitmAnalysis {
             )
             CertificatePinCheckResult.NOT_ATTEMPTED ->
                 unknown("TLS pin check did not complete", pinEvidence + failed)
-            CertificatePinCheckResult.INVALID_CONFIGURATION ->
-                RaspCheckResult.error(DETECTOR_ID, "TLS pin configuration is invalid (pins must be sha256/<Base64>)")
+            CertificatePinCheckResult.INVALID_CONFIGURATION -> RaspCheckResult(
+                DETECTOR_ID, RaspCheckStatus.ERROR,
+                listOf(RaspEvidence("pin_format", "sha256/<Base64 of 32 bytes>")),
+                reason = "invalid pin",
+            )
             CertificatePinCheckResult.MATCH ->
                 if (failed.isNotEmpty()) unknown("Proxy or user-CA check could not run", pinEvidence + failed)
                 else RaspCheckResult.secure(

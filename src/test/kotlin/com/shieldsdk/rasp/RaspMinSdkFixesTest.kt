@@ -36,8 +36,8 @@ class RaspMinSdkFixesTest {
 
     @Test fun `pin syntax check accepts real pins and rejects malformed ones`() {
         assertTrue(RaspCertificatePinProbes.isPin(RaspCertificatePinProbes.spkiPin(cert)))
-        assertTrue(RaspCertificatePinProbes.isPin("sha256/AA=="))
-        for (bad in listOf("sha256/", "AA==", "sha1/AA==", "sha256/not base64!", "sha256/A=A")) {
+        // Task 4.10: only Base64 of exactly 32 bytes; "sha256/AA==" (1 byte) is no longer a pin.
+        for (bad in listOf("sha256/AA==", "sha256/", "AA==", "sha1/AA==", "sha256/not base64!", "sha256/A=A")) {
             assertFalse(bad, RaspCertificatePinProbes.isPin(bad))
         }
     }
