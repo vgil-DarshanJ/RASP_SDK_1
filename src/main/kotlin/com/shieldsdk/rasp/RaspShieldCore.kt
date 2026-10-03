@@ -154,7 +154,7 @@ object RaspShieldCore {
         val probes = RaspDeviceIntegrityProbes(context)
         val (signals, verdict) = probes.rootAssessment()
         val posture = probes.posturesSignals()
-        val evidence = signals.map { RaspEvidence("root_signal", it) } +
+        val evidence = signals.map { RaspEvidence("root_signal", it, if (RaspRootAnalysis.isHardSignal(it)) "hard" else "soft") } +
             posture.map { RaspEvidence("build_posture", it, "low_severity") } +
             listOf(RaspEvidence("signal_count", signals.size))
         when (verdict) {
