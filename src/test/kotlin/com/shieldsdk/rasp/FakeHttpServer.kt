@@ -11,9 +11,13 @@ import java.util.Collections
 /**
  * Minimal HTTP/1.1 server on a real 127.0.0.1 socket for JVM tests
  * (`com.sun.net.httpserver` is not on the Android unit-test classpath).
- * Records every request and answers with the status [respond] returns.
+ * Records every request and answers with the status [respond] returns and
+ * the body [bodyFor] returns (empty by default).
  */
-class FakeHttpServer(private val respond: (Request) -> Int) : AutoCloseable {
+class FakeHttpServer(
+    private val bodyFor: (Request) -> String = { "" },
+    private val respond: (Request) -> Int,
+) : AutoCloseable {
 
     data class Request(val method: String, val path: String, val headers: Map<String, String>, val body: String)
 
@@ -52,8 +56,10 @@ class FakeHttpServer(private val respond: (Request) -> Int) : AutoCloseable {
         val request = Request(requestLine.getOrElse(0) { "" }, requestLine.getOrElse(1) { "" }, headers, String(body, Charsets.UTF_8))
         requests.add(request)
         val status = respond(request)
+        val responseBody = bodyFor(request).toByteArray(Charsets.UTF_8)
         client.getOutputStream().apply {
-            write("HTTP/1.1 $status Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+            write("HTTP/1.1 $status Test\r\nContent-Type: application/json\r\nContent-Length: ${responseBody.size}\r\nConnection: close\r\n\r\n".toByteArray())
+            write(responseBody)
             flush()
         }
     }

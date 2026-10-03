@@ -54,7 +54,8 @@
         </intent>
     </queries>
 
-    <!-- INTERNET — Phase 8 only (RaspGeoIpProbes' IP-reputation lookup and
+    <!-- INTERNET — Phase 8 only (RaspGeoIpProbes' call to the platform
+         backend's /v1/ip-risk and
          RaspCertificatePinProbes' TLS-pin probe; Play Integrity's own
          Google Play Services client also needs it). Every OTHER detector
          in this module reads only unrestricted system services (Window,

@@ -100,6 +100,9 @@ public object RaspEventShipper {
 
     public fun isConfigured(): Boolean = credential != null
 
+    /** The configured credential, for other signed backend calls (`high_risk_ip`). */
+    internal fun currentCredential(): RaspEventCredential? = credential
+
     private const val PREFS_FILE = "rasp_shield_secure_prefs"
     private const val PREFS_KEY = "rasp_shield_ingestion_credential"
 
