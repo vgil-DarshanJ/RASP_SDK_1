@@ -230,27 +230,89 @@ object RaspHookAnalysis {
         val mapsReadable: Boolean,
         /** `null` when no critical method could be resolved by reflection. */
         val nativeMethodHooked: Boolean?,
+        /**
+         * Per fired signal, the lines that made it fire (at most
+         * [LINES_PER_SIGNAL], each shortened by [evidenceLine]): maps lines
+         * for the maps-based signals, `native method: <name>` for
+         * `hook_native_method`.
+         */
+        val signalLines: Map<String, List<String>> = emptyMap(),
     )
+
+    /** Longest maps line written to evidence. */
+    const val EVIDENCE_LINE_MAX: Int = 80
+
+    /** Matching lines kept per signal (`hook_rwx_mapping` alone can match dozens). */
+    const val LINES_PER_SIGNAL: Int = 3
+
+    /**
+     * A maps line for evidence, at most [EVIDENCE_LINE_MAX] characters.
+     * Column-alignment whitespace is collapsed first. A line still too long
+     * keeps its start (address range, permissions) and its end (the file
+     * path) with `…` in place of the middle — cutting only the end would
+     * usually remove the library name, which is the part that identifies
+     * what matched.
+     */
+    fun evidenceLine(mapsLine: String): String {
+        val collapsed = mapsLine.trim().replace(Regex("\\s+"), " ")
+        if (collapsed.length <= EVIDENCE_LINE_MAX) return collapsed
+        val head = 30
+        val tail = EVIDENCE_LINE_MAX - head - 1
+        return collapsed.take(head) + "…" + collapsed.takeLast(tail)
+    }
 
     /**
      * Turns raw readings into signals. Pure: the probe class supplies the
-     * maps text and the method-integrity reading.
+     * maps text and the method-integrity reading ([hookedMethods]: names of
+     * critical methods that report `native`).
      */
-    fun observe(mapsContent: String?, nativeMethodHooked: Boolean?): Observation {
+    fun observe(
+        mapsContent: String?,
+        nativeMethodHooked: Boolean?,
+        hookedMethods: List<String> = emptyList(),
+    ): Observation {
         val signals = mutableListOf<String>()
+        val lines = linkedMapOf<String, List<String>>()
+        fun keep(signal: String, matched: Sequence<String>) {
+            lines[signal] = matched.take(LINES_PER_SIGNAL).map(::evidenceLine).toList()
+        }
         var frameworks = emptyList<String>()
         var rwx: Int? = null
         var suspicious: Int? = null
         if (mapsContent != null) {
             frameworks = hookFrameworksIn(mapsContent)
-            if (frameworks.isNotEmpty()) signals.add("hook_framework_lib")
+            if (frameworks.isNotEmpty()) {
+                signals.add("hook_framework_lib")
+                keep("hook_framework_lib", mapsContent.lineSequence().filter { hookFrameworksIn(it).isNotEmpty() })
+            }
             suspicious = suspiciousExecutableMappings(mapsContent).size
-            if (suspicious > 0) signals.add("hook_suspicious_lib_path")
+            if (suspicious > 0) {
+                signals.add("hook_suspicious_lib_path")
+                keep("hook_suspicious_lib_path", mapsContent.lineSequence().filter(::isSuspiciousExecutableMapping))
+            }
             rwx = countRwxMappings(mapsContent)
-            if (rwx > RWX_MAPPING_THRESHOLD) signals.add("hook_rwx_mapping")
+            if (rwx > RWX_MAPPING_THRESHOLD) {
+                signals.add("hook_rwx_mapping")
+                keep("hook_rwx_mapping", mapsContent.lineSequence().filter(::isRwxMapping))
+            }
         }
-        if (nativeMethodHooked == true) signals.add("hook_native_method")
-        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked)
+        if (nativeMethodHooked == true) {
+            signals.add("hook_native_method")
+            keep("hook_native_method", hookedMethods.asSequence().map { "native method: $it" })
+        }
+        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked, lines)
+    }
+
+    /**
+     * The signals that produced a DETECTED verdict: the hard signal(s) when
+     * present (one is enough), otherwise the soft signals (two or more).
+     * Empty when the verdict is not DETECTED.
+     */
+    fun decisiveSignals(signals: List<String>): List<String> {
+        val distinct = signals.distinct()
+        if (!hookVerdict(distinct)) return emptyList()
+        val hard = distinct.filter { it in hardHookSignals }
+        return hard.ifEmpty { distinct.filter { it in softHookSignals } }
     }
 
     /**
@@ -261,12 +323,20 @@ object RaspHookAnalysis {
      *
      * Evidence names every signal that fired (with its hard/soft class), the
      * framework markers matched, and the counts behind the soft signals, so a
-     * DETECTED on a real device shows which rule convicted it.
+     * DETECTED on a real device shows which rule convicted it:
+     * - `detected_by` (only on DETECTED): the signals that decided it;
+     * - `hook_signal_line` (note = signal name): for each fired signal, up to
+     *   [LINES_PER_SIGNAL] lines that matched, shortened by [evidenceLine].
      */
     fun toCheckResult(observation: Observation, detectorId: String = "hook_detection"): RaspCheckResult {
         val distinct = observation.signals.distinct()
+        val decisive = decisiveSignals(distinct)
         val evidence = buildList {
+            if (decisive.isNotEmpty()) add(RaspEvidence("detected_by", decisive))
             distinct.forEach { add(RaspEvidence("hook_signal", it, signalClass(it))) }
+            distinct.forEach { signal ->
+                observation.signalLines[signal].orEmpty().forEach { add(RaspEvidence("hook_signal_line", it, signal)) }
+            }
             observation.frameworks.forEach { add(RaspEvidence("hook_framework", it)) }
             observation.rwxMappingCount?.let {
                 add(RaspEvidence("rwx_mapping_count", it, "threshold $RWX_MAPPING_THRESHOLD"))
