@@ -1,0 +1,5 @@
+{
+  "package": "com.android.chrome",
+  "publicKey": "MCowBQYDK2VwAyEAIs9x1OUySjotw28/0LG4MYmmPdOmOjopKTjsvKO2TpU=",
+  "list": "{\"payload\":\"{\\\"version\\\":1,\\\"entries\\\":[{\\\"package\\\":\\\"com.android.chrome\\\",\\\"category\\\":\\\"test_entry\\\",\\\"severity\\\":\\\"low\\\"}]}\",\"signature\":\"3iTJ7eKUls5q2wtyR44p80lqD96aXzVe9LnLOg7sFQPr25cauA64Pm2iW2sLfdEJOXWhHQv0r1PCBMtL12y2Cg==\"}"
+}
