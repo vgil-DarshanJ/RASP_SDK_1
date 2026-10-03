@@ -60,8 +60,9 @@ same titles and severities.
 ## Package visibility
 
 The engine manifest adds a `<queries>` intent for launcher activities so
-`task_hijack` and `malware_reputation` can see apps with a launcher icon on
-Android 11+. It merges into every host app; a host can remove it with
-`tools:node="remove"`. Apps without a launcher icon stay invisible unless
-the host declares them in `<queries>` or holds `QUERY_ALL_PACKAGES`. Both
-detectors report the scope as `visibility` evidence.
+`task_hijack` and `malware_reputation` (both off by default) can see apps
+with a launcher icon on Android 11+. It merges into every host app; a host
+can remove it with `tools:node="remove"`. Apps without a launcher icon stay
+invisible unless the host declares them as `<package>` entries. The SDK does
+not use `QUERY_ALL_PACKAGES`. Both detectors report the scope as
+`visibility` evidence. Details: [PACKAGE_VISIBILITY.md](PACKAGE_VISIBILITY.md).
