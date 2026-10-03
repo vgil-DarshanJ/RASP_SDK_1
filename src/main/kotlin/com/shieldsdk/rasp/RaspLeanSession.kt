@@ -123,6 +123,10 @@ public class RaspLeanSession private constructor(
         else ScreenshotGuard.disable(activityProvider?.invoke())
         if (config.clipboardProtection) clipboard.enable(config.clipboardAutoClear) else clipboard.disable()
         if (config.repackagingDetection) RaspShieldCore.configureExpectedSigningCertificate(config.expectedSigningCertSha256)
+        else if (config.tamperDetection && config.expectedSigningCertSha256 != null) {
+            // tamper compares against it too; without one, tamper reports UNKNOWN "not configured".
+            RaspShieldCore.configureExpectedSigningCertificate(config.expectedSigningCertSha256)
+        }
     }
 
     private fun tick() {

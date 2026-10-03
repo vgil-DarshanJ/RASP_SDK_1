@@ -451,26 +451,18 @@ object RaspShieldCore {
     // ── Tamper ─────────────────────────────────────────────────────────
 
     /**
-     * `true` when this build's own binary looks modified since signing —
-     * either a configured expected certificate no longer matches, or the
-     * install directory itself is missing/corrupt. Unlike
-     * [checkRepackagingBlocking], this check is meaningful even with no
-     * expected fingerprint configured (the install-directory check alone
-     * still catches a corrupted install), matching the original
-     * `isAppTampered()`'s exact two-signal shape.
+     * DETECTED when the install directory is missing or the signing
+     * certificate no longer matches the configured one. With no expected
+     * certificate configured nothing is compared, so the result is UNKNOWN
+     * ("not configured"), never SECURE. See [RaspSigningProbes.tamperVerdict].
      */
     fun checkTamperBlocking(context: Context): RaspCheckResult = runGuarded("tamper") {
         val expected = expectedSigningCertificateSha256
-        val mismatch = expected?.let { RaspSigningProbes.signatureMismatches(context, it) }
-        val installMissing = RaspSigningProbes.installDirectoryMissing(context)
-
-        val tampered = mismatch == true || installMissing
-        val evidence = listOfNotNull(
-            mismatch?.let { RaspEvidence("signing_certificate_mismatch", it) },
-            RaspEvidence("install_directory_missing", installMissing),
+        RaspSigningProbes.tamperVerdict(
+            expectedConfigured = expected != null,
+            mismatch = expected?.let { RaspSigningProbes.signatureMismatches(context, it) },
+            installMissing = RaspSigningProbes.installDirectoryMissing(context),
         )
-        if (tampered) RaspCheckResult.detected("tamper", evidence)
-        else RaspCheckResult.secure("tamper", evidence)
     }
 
     fun checkTamperAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
