@@ -578,27 +578,14 @@ object RaspShieldCore {
     // ── High-risk IP / geo reputation ─────────────────────────────────
 
     /**
-     * Real network I/O (a lookup to a public IP-reputation endpoint, 5s
-     * timeout) — always call off the main thread, or use
-     * [checkHighRiskIpAsync]. A failed/timed-out lookup reports
-     * `UNAVAILABLE`, never a threat — an unreliable network must not
-     * itself block a legitimate user.
+     * Asks the RASP Shield backend (`GET /v1/ip-risk`, HMAC-signed with the
+     * credential given to [RaspEventShipper.configure]); no third-party call.
+     * Real network I/O (5 s timeout, cached per network) — call off the main
+     * thread, or use [checkHighRiskIpAsync]. A failed request is UNKNOWN,
+     * never a threat. See [RaspGeoIpProbes].
      */
     fun checkHighRiskIpBlocking(context: Context): RaspCheckResult =
-        runGuarded("high_risk_ip") {
-            val result = RaspGeoIpProbes.checkHighRiskIp()
-            if (result.checkFailed) {
-                return@runGuarded RaspCheckResult.unavailable(
-                    "high_risk_ip", "IP reputation lookup did not complete"
-                )
-            }
-            val evidence = buildList {
-                if (result.matchedBlockedCountry) add(RaspEvidence("high_risk_ip_signal", "blocked_country"))
-                if (result.isProxy) add(RaspEvidence("high_risk_ip_signal", "proxy_flag"))
-            }
-            if (result.isRisk) RaspCheckResult.detected("high_risk_ip", evidence)
-            else RaspCheckResult.secure("high_risk_ip", evidence)
-        }
+        runGuarded(RaspGeoIpProbes.DETECTOR_ID) { RaspGeoIpProbes.checkCached(context) }
 
     fun checkHighRiskIpAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
         runAsync(context, callback, ::checkHighRiskIpBlocking)
