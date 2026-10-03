@@ -49,11 +49,19 @@ class RaspTask3bDetectorsTest {
     private class MemorySimStore(var saltValue: ByteArray? = ByteArray(32) { it.toByte() }) : RaspSimChangeProbes.Store {
         var baseline: RaspSimChangeProbes.Baseline? = null
         var failSaves = false
+        var failLoads = false
         override fun salt() = saltValue
-        override fun load() = baseline
+        override fun load(): RaspSimChangeProbes.Baseline? {
+            if (failLoads) throw IllegalStateException("prefs unreadable")
+            return baseline
+        }
         override fun save(baseline: RaspSimChangeProbes.Baseline): Boolean {
             if (failSaves) return false
             this.baseline = baseline
+            return true
+        }
+        override fun clear(): Boolean {
+            baseline = null
             return true
         }
     }
@@ -67,7 +75,48 @@ class RaspTask3bDetectorsTest {
         val store = MemorySimStore()
         val r = sim(store, listOf(simA))
         assertEquals(RaspCheckStatus.UNKNOWN, r.status)
+        assertEquals("baseline stored", r.reason)
         assertTrue(store.baseline != null)
+    }
+
+    @Test fun `sim_change detected when only the salted hash input changes (same slot, new carrier)`() {
+        val store = MemorySimStore()
+        sim(store, listOf(simA))
+        val sameSlotNewCarrier = simA.copy(carrierId = 2032, mccMnc = "405857")
+        assertEquals(RaspCheckStatus.DETECTED, sim(store, listOf(sameSlotNewCarrier)).status)
+    }
+
+    @Test fun `sim_change reset forgets the baseline - next run stores a new one and is UNKNOWN again`() {
+        val store = MemorySimStore()
+        sim(store, listOf(simA))
+        assertEquals(RaspCheckStatus.DETECTED, sim(store, listOf(simB)).status)
+
+        assertTrue(RaspSimChangeProbes.resetBaseline(store, debuggableBuild = true))
+        assertEquals(null, store.baseline)
+        val afterReset = sim(store, listOf(simB))
+        assertEquals(RaspCheckStatus.UNKNOWN, afterReset.status)
+        assertEquals("baseline stored", afterReset.reason)
+        assertEquals(RaspCheckStatus.SECURE, sim(store, listOf(simB)).status)
+    }
+
+    @Test fun `sim_change reset is refused in a release (non-debuggable) build`() {
+        val store = MemorySimStore()
+        sim(store, listOf(simA))
+        val before = store.baseline
+        assertFalse(RaspSimChangeProbes.resetBaseline(store, debuggableBuild = false))
+        assertEquals(before, store.baseline)
+        assertEquals(RaspCheckStatus.DETECTED, sim(store, listOf(simB)).status)
+    }
+
+    @Test fun `sim_change unreadable baseline is ERROR and is not replaced by a new baseline`() {
+        val store = MemorySimStore()
+        sim(store, listOf(simA))
+        val stored = store.baseline
+        store.failLoads = true
+        val r = sim(store, listOf(simB))
+        assertEquals(RaspCheckStatus.ERROR, r.status)
+        assertEquals(stored, store.baseline)
+        assertFalse(RaspSimChangeProbes.acknowledgeChange(store))
     }
 
     @Test fun `sim_change clean on the same SIM`() {

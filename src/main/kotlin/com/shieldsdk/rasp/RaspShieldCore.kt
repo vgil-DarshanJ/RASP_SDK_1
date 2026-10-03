@@ -1008,6 +1008,15 @@ object RaspShieldCore {
     fun acknowledgeSimChange(context: Context): Boolean =
         RaspSimChangeProbes.acknowledgeChange(RaspSimChangeProbes.EncryptedStore(context))
 
+    /**
+     * Testing only: forgets the SIM baseline, so the next `sim_change` run
+     * stores a new one and reports UNKNOWN "baseline stored". Works only in a
+     * debuggable build; a release build returns `false` and keeps the
+     * baseline. Blocking (storage I/O).
+     */
+    fun resetSimBaseline(context: Context): Boolean =
+        RaspSimChangeProbes.resetBaseline(RaspSimChangeProbes.EncryptedStore(context), isDebuggableBuild(context))
+
     // ── Third-party keyboard (Task 3b) ─────────────────────────────────
 
     @JvmOverloads
