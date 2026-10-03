@@ -10,7 +10,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
 
 /**
@@ -216,6 +218,17 @@ public object RaspEventShipper {
         }
     }
 
+    /**
+     * ISO-8601 UTC with milliseconds (`2026-10-01T12:00:00.000Z`) — what the
+     * backend's `observedAt` (zod `datetime()`) accepts. `SimpleDateFormat`
+     * rather than `java.time.Instant`, which needs API 26 (minSdk is 23). A
+     * new formatter per call: `SimpleDateFormat` is not thread-safe.
+     */
+    internal fun isoUtc(epochMillis: Long): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+            .apply { timeZone = TimeZone.getTimeZone("UTC") }
+            .format(java.util.Date(epochMillis))
+
     /** The only responses that count as delivered: HTTP 2xx. */
     internal fun isDelivered(httpStatus: Int): Boolean = httpStatus in 200..299
 
@@ -341,7 +354,7 @@ public object RaspEventShipper {
                 put("osVersion", device.osVersion)
                 if (device.appVersion != null) put("appVersion", device.appVersion)
                 put("sdkVersion", SDK_VERSION)
-                put("observedAt", Instant.ofEpochMilli(result.observedAtMillis).toString())
+                put("observedAt", isoUtc(result.observedAtMillis))
             })
         }
         val bodyBytes = JSONObject().apply { put("events", eventsArray) }.toString()
