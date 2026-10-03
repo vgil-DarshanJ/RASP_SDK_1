@@ -22,13 +22,13 @@ package com.shieldsdk.rasp
  *   RaspRootAnalysis          — decides meaning (pure; this file)
  * ```
  *
- * ## Verdict model: deliberately different from the emulator detector
+ * ## Verdict model: hard and soft signals
  *
- * [isRooted] is `isNotEmpty()` — **any** signal convicts. That asymmetry
- * against [RaspEmulatorAnalysis.isEmulator] is intentional and predates this
- * extraction: a `su` binary or a Magisk artefact has no innocent explanation on
- * a retail handset, whereas `Build.MANUFACTURER == "unknown"` genuinely does.
- * Preserved as-is.
+ * [isRooted] needs one hard signal ([hardSignalIds]: `su`, Magisk files or
+ * mounts, a writable system partition, `ro.secure=0`) or two soft signals
+ * ([softSignalIds]: a root-manager or root-hiding app, busybox). A `su`
+ * binary or a Magisk artefact has no innocent explanation on a retail
+ * handset; a root-manager app alone does — it installs without root.
  */
 object RaspRootAnalysis {
 
@@ -287,19 +287,30 @@ object RaspRootAnalysis {
             mountsContent.contains("/data/adb")
 
     /**
-     * `true` when **any** root signal fired.
-     *
-     * Unlike the emulator verdict this is intentionally unweighted — see the
-     * class docs.
+     * Hard signals: root itself on the device — an `su` binary, Magisk files
+     * or mounts, a writable system partition, `ro.secure=0`. One is enough.
      */
-    fun isRooted(signals: List<String>): Boolean = signals.isNotEmpty()
+    val hardSignalIds: Set<String> = setOf(
+        "su_binary", "su_on_path", "magisk_artifact", "mount_namespace", "system_writable", "ro_insecure",
+    )
+
+    /**
+     * Soft signals: an app or tool that is also found on unrooted phones (a
+     * root-manager or root-hiding app can be installed without root; some
+     * ROMs ship busybox). One alone does not convict; two do.
+     */
+    val softSignalIds: Set<String> = setOf("root_manager_app", "root_cloaking_app", "busybox")
+
+    fun isHardSignal(signal: String): Boolean = signal in hardSignalIds
+
+    /** `true` with at least one hard signal, or at least two soft signals. */
+    fun isRooted(signals: List<String>): Boolean =
+        signals.any { it in hardSignalIds } || signals.distinct().count { it in softSignalIds } >= 2
 
     // ── Verdict-level tri-state (Anti-Bypass Resilience milestone) ────────
     //
-    // [isRooted] answers "did any signal fire?" and stays exactly as it was —
-    // every signal in [allSignalIds] already has no innocent reading on a
-    // retail device, so a flat "any signal convicts" rule for THAT question
-    // remains correct and is not touched.
+    // [isRooted] answers "is there enough evidence of root?" (one hard or two
+    // soft signals).
     //
     // What [isRooted] cannot say is whether an EMPTY result means "checked
     // thoroughly, genuinely clean" or "could not check". Both currently
@@ -312,15 +323,16 @@ object RaspRootAnalysis {
     // not yet been extended to use them.
 
     enum class RootVerdict {
-        /** At least one signal fired. Unchanged meaning from [isRooted]. */
+        /** [isRooted]: a hard signal, or two soft signals. */
         DETECTED,
 
-        /** No signal fired, and at least the mount table — the single most
-         * informative probe [rootSignals] runs — was actually readable. */
+        /** Not [isRooted] (at most one soft signal), and at least the mount
+         * table — the single most informative probe [rootSignals] runs — was
+         * actually readable. */
         CLEAN,
 
-        /** No signal fired, but the mount table could not be read either.
-         * An empty signal list here proves nothing: the probe most capable of
+        /** Not [isRooted] (at most one soft signal), but the mount table could
+         * not be read either. That proves nothing: the probe most capable of
          * finding root evidence never got to look. */
         UNAVAILABLE,
     }
@@ -341,7 +353,7 @@ object RaspRootAnalysis {
         signals: List<String>,
         mountTableAccess: MountTableAccess,
     ): RootVerdict = when {
-        signals.isNotEmpty() -> RootVerdict.DETECTED
+        isRooted(signals) -> RootVerdict.DETECTED
         mountTableAccess == MountTableAccess.NOT_ACCESSIBLE -> RootVerdict.UNAVAILABLE
         else -> RootVerdict.CLEAN
     }
