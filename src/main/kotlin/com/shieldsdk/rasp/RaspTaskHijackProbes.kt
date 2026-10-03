@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicReference
  * Package visibility (API 30+): only packages visible to the host are
  * scanned. The engine manifest declares a `<queries>` intent for launcher
  * activities, which makes apps with a launcher icon visible; apps without
- * one are not, unless the host holds `QUERY_ALL_PACKAGES`. The scope is
- * reported as evidence (`visibility`). Scan results are cached for 5 minutes.
+ * one are not (see docs/PACKAGE_VISIBILITY.md). The scope is reported as
+ * evidence (`visibility`). Scan results are cached for 5 minutes.
  *
  * Host activities unreadable or foreign scan failed → UNKNOWN.
  */
@@ -46,7 +46,7 @@ object RaspTaskHijackProbes {
         val hostActivities: List<ActivityConfig>?,
         /** Activities of other visible packages; `null` when the scan failed. */
         val foreignActivities: List<ForeignActivity>?,
-        /** `"all"` (API < 30 or QUERY_ALL_PACKAGES) or `"launcher_apps"`. */
+        /** `"all"` (API < 30) or `"launcher_apps"` (API 30+). */
         val visibility: String,
         val visiblePackageCount: Int,
     )
@@ -94,9 +94,7 @@ object RaspTaskHijackProbes {
         } catch (e: Exception) {
             null
         }
-        val visibility = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
-            context.checkSelfPermission("android.permission.QUERY_ALL_PACKAGES") == PackageManager.PERMISSION_GRANTED
-        ) "all" else "launcher_apps"
+        val visibility = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) "all" else "launcher_apps"
         val scan = cachedForeignScan(pm, hostPackage)
         return Observation(hostPackage, host, scan?.first, visibility, scan?.second ?: 0)
     }
