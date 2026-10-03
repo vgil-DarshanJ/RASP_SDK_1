@@ -29,11 +29,11 @@ public interface RaspQueueStore {
  *
  * ## Delivery rule
  * Every envelope is enqueued (persisted) **before** any send is attempted.
- * [drain] sends oldest-first and removes an envelope — from memory and from
- * storage — only when the sender returns `true`, which
- * [RaspEventShipper.postEnvelope] does only for an HTTP 2xx. Any other status,
- * a timeout, or an exception leaves it at the head of the queue and stops the
- * drain, so order is preserved for the retry.
+ * [drain] sends oldest-first. The sender ([RaspEnvelopeDelivery.deliver])
+ * returns a [RaspDeliveryOutcome]: DELIVERED and DROPPED remove the envelope
+ * from memory and storage; RETRY_LATER (or an exception) leaves it at the
+ * head of the queue and stops the drain, so order is preserved for the retry.
+ * Which HTTP responses mean which outcome is decided by the sender, not here.
  *
  * ## Retry
  * After a failed drain the next attempt is scheduled after a backoff
@@ -66,8 +66,8 @@ open class RaspOfflineQueue(
         }
     }
 
-    /** Outcome of one [drain]. */
-    data class DrainResult(val sent: Int, val remaining: Int, val failed: Boolean)
+    /** Outcome of one [drain]: [sent] delivered, [dropped] removed undelivered. */
+    data class DrainResult(val sent: Int, val remaining: Int, val failed: Boolean, val dropped: Int = 0)
 
     private data class Entry(val id: Long, val json: String)
 
@@ -85,7 +85,7 @@ open class RaspOfflineQueue(
     private var pendingRun: ScheduledFuture<*>? = null // guarded by lock
 
     @Volatile
-    private var sender: ((String) -> Boolean)? = null
+    private var sender: ((String) -> RaspDeliveryOutcome)? = null
 
     /** Returns current queue size. */
     public fun size(): Int = synchronized(lock) { ensureLoadedLocked(); entries.size }
@@ -113,30 +113,34 @@ open class RaspOfflineQueue(
     }
 
     /**
-     * Sends queued envelopes oldest-first until one fails or the queue is
-     * empty. An envelope is removed only after [send] returns `true`.
-     * Synchronous; returns immediately with `failed = false` and `sent = 0`
-     * if another drain is already running.
+     * Sends queued envelopes oldest-first until one must be retried or the
+     * queue is empty. DELIVERED and DROPPED remove the envelope; RETRY_LATER
+     * or an exception stops the drain and keeps it. Synchronous; returns
+     * immediately with `failed = false` and `sent = 0` if another drain is
+     * already running.
      */
-    public fun drain(send: (String) -> Boolean): DrainResult {
+    public fun drain(send: (String) -> RaspDeliveryOutcome): DrainResult {
         if (!draining.compareAndSet(false, true)) return DrainResult(0, size(), failed = false)
         try {
             var sent = 0
+            var dropped = 0
             while (true) {
                 val head = synchronized(lock) { ensureLoadedLocked(); entries.firstOrNull() }
-                    ?: return DrainResult(sent, 0, failed = false)
-                val delivered = try {
+                    ?: return DrainResult(sent, 0, failed = false, dropped = dropped)
+                val outcome = try {
                     send(head.json)
                 } catch (e: Exception) {
                     notifyLogger(e)
-                    false
+                    RaspDeliveryOutcome.RETRY_LATER
                 }
-                if (!delivered) return DrainResult(sent, size(), failed = true)
+                if (outcome == RaspDeliveryOutcome.RETRY_LATER) {
+                    return DrainResult(sent, size(), failed = true, dropped = dropped)
+                }
                 synchronized(lock) {
                     entries.remove(head) // no-op if it was evicted while in flight
                     store.remove(head.id)
                 }
-                sent++
+                if (outcome == RaspDeliveryOutcome.DELIVERED) sent++ else dropped++
             }
         } finally {
             draining.set(false)
@@ -147,7 +151,7 @@ open class RaspOfflineQueue(
      * Sets the sender used by the background flusher and starts a flush.
      * Calling again replaces the sender.
      */
-    public fun startFlusher(shipFn: (String) -> Boolean) {
+    public fun startFlusher(shipFn: (String) -> RaspDeliveryOutcome) {
         sender = shipFn
         flushNow()
     }

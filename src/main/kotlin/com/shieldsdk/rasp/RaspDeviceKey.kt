@@ -147,6 +147,13 @@ public class RaspDeviceKey(private val context: Context) {
     public fun deviceKeyId(): String? =
         exportPublicKeySpki()?.let { RaspEvidenceEnvelope.deviceKeyId(it) }
 
+    /** This key as the source for [RaspDeviceRegistrar]. */
+    public fun asRegistrationKeySource(): RaspRegistrationKeySource = object : RaspRegistrationKeySource {
+        override fun deviceKeyId(): String? = this@RaspDeviceKey.deviceKeyId()
+        override fun publicKeyBase64(): String? = exportPublicKeyBase64()
+        override fun attestationChainBase64(): List<String>? = exportAttestationChainBase64()
+    }
+
     /** This key as the signer for [RaspEvidenceEnvelope]. */
     public fun asEnvelopeSigner(): RaspEnvelopeSigner = object : RaspEnvelopeSigner {
         override fun publicKeySpki(): ByteArray? = exportPublicKeySpki()
