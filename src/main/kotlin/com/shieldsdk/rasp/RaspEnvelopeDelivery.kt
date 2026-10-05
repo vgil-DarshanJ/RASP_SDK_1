@@ -100,6 +100,8 @@ public class RaspDeviceRegistrar(
     private val sdkVersion: String = BuildConfig.RASP_ENGINE_VERSION,
     private val http: RaspHttpPost = RaspHttpPost.URL_CONNECTION,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The app's signing certificate SHA-256 (uppercase hex), sent as `signingCertSha256` when known. */
+    private val signingCertSha256: () -> String? = { null },
 ) {
     public enum class Result { REGISTERED, RETRY_LATER, REJECTED }
 
@@ -124,14 +126,18 @@ public class RaspDeviceRegistrar(
         val chain = keySource.attestationChainBase64()
         if (keyId == null || publicKey == null || chain.isNullOrEmpty()) return Result.RETRY_LATER
 
-        val body = RaspCanonicalJson.encode(
-            linkedMapOf(
-                "appId" to appId,
-                "publicKey" to publicKey,
-                "attestationChain" to chain,
-                "sdkVersion" to sdkVersion,
-            ),
-        ).toByteArray(Charsets.UTF_8)
+        val fields = linkedMapOf<String, Any?>(
+            "appId" to appId,
+            "publicKey" to publicKey,
+            "attestationChain" to chain,
+            "sdkVersion" to sdkVersion,
+        )
+        // The backend stores it on the registration and compares later tamper
+        // evidence against it (Task 6.0 Part 2.3). Optional: left out when unknown.
+        try { signingCertSha256() } catch (e: Exception) { null }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { fields["signingCertSha256"] = it }
+        val body = RaspCanonicalJson.encode(fields).toByteArray(Charsets.UTF_8)
         val timestamp = clock().toString()
         val headers = mapOf(
             "Content-Type" to "application/json",
@@ -149,13 +155,10 @@ public class RaspDeviceRegistrar(
     }
 
     public companion object {
-        /** `https://host/v1/events` → `https://host/v1/devices/register` (same API version prefix). */
+        /** `https://host/v1/events` → `https://host/v1/devices/register` (see [RaspBackendUrls.endpoint]). */
         @JvmStatic
-        public fun registrationUrl(ingestionUrl: String): String {
-            val base = ingestionUrl.trimEnd('/')
-            return if (base.endsWith("/events")) base.removeSuffix("/events") + "/devices/register"
-            else base.substringBeforeLast('/') + "/devices/register"
-        }
+        public fun registrationUrl(ingestionUrl: String): String =
+            RaspBackendUrls.endpoint(ingestionUrl, "devices/register") ?: ingestionUrl
     }
 }
 
