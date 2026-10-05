@@ -18,9 +18,13 @@ import java.util.concurrent.atomic.AtomicReference
  * Verdict:
  * - backend credential not configured ([RaspEventShipper.configure]) → UNAVAILABLE
  * - request failed, non-200 answer, or an answer that cannot be read → UNKNOWN
- * - `blocked_country` or `proxy` flag → DETECTED
+ * - `risk_level` high, or blocked / not-allowed country, Tor, proxy → DETECTED
  * - country unknown (private address, no geo source, lookup failed) → UNKNOWN
- * - otherwise → SECURE, with the country and flags in evidence
+ * - `risk_level` low or medium (medium = soft: hosting IP, country changed
+ *   since registration) → SECURE, with country, risk_level and reasons in evidence
+ *
+ * The URL comes from [RaspBackendUrls.endpoint]; the result carries
+ * `endpoint_host` (host:port only) so a wrong backend address is visible.
  *
  * Results are cached per active network for [CACHE_MILLIS] (an UNKNOWN for
  * [RETRY_MILLIS]), so the session's 4 s ticks do not call the backend each
@@ -41,35 +45,61 @@ public object RaspGeoIpProbes {
         fun get(url: String, headers: Map<String, String>): Response?
     }
 
-    /** `https://host/v1/events` → `https://host/v1/ip-risk` (same API version prefix). */
-    fun ipRiskUrl(ingestionUrl: String): String {
-        val base = ingestionUrl.trimEnd('/')
-        return if (base.endsWith("/events")) base.removeSuffix("/events") + "/ip-risk"
-        else base.substringBeforeLast('/') + "/ip-risk"
-    }
+    /**
+     * `https://host/v1/events` → `https://host/v1/ip-risk`, built with
+     * [RaspBackendUrls.endpoint] (scheme + host + optional prefix + `/v1/ip-risk`).
+     * `null` when the ingestion URL is not an absolute http(s) URL.
+     */
+    fun ipRiskUrl(ingestionUrl: String): String? = RaspBackendUrls.endpoint(ingestionUrl, "ip-risk")
 
-    /** Builds the signed request and maps the answer. No caching. */
-    fun check(credential: RaspEventCredential?, transport: Transport = HttpTransport, nowMillis: Long = System.currentTimeMillis()): RaspCheckResult {
+    /**
+     * Builds the signed request and maps the answer. No caching.
+     * [deviceKeyId]: this device's registered key id, sent as
+     * `X-Device-Key-Id` so the backend can compare with the country seen at
+     * registration; omitted when the device is not registered yet.
+     */
+    fun check(
+        credential: RaspEventCredential?,
+        transport: Transport = HttpTransport,
+        nowMillis: Long = System.currentTimeMillis(),
+        deviceKeyId: String? = null,
+    ): RaspCheckResult {
         if (credential == null) {
             return RaspCheckResult.unavailable(
                 DETECTOR_ID, "Backend credential not configured (high_risk_ip asks the platform's /v1/ip-risk)",
             )
         }
+        val url = ipRiskUrl(credential.ingestionUrl)
+            ?: return unknown("Credential ingestion_url is not a valid http(s) URL")
+        // Host only — never the path, API key or signature.
+        val host = RaspBackendUrls.hostOf(url)
         val timestamp = nowMillis.toString()
-        val headers = mapOf(
-            "X-Api-Key" to credential.apiKey,
-            "X-Timestamp" to timestamp,
-            "X-Signature" to RaspHmacSigner.sign(credential.apiSecret, timestamp, ByteArray(0)),
-        )
+        val headers = buildMap {
+            put("X-Api-Key", credential.apiKey)
+            put("X-Timestamp", timestamp)
+            put("X-Signature", RaspHmacSigner.sign(credential.apiSecret, timestamp, ByteArray(0)))
+            if (!deviceKeyId.isNullOrBlank()) put("X-Device-Key-Id", deviceKeyId)
+        }
         val response = try {
-            transport.get(ipRiskUrl(credential.ingestionUrl), headers)
+            transport.get(url, headers)
         } catch (e: Exception) {
             null
         }
-        return evaluate(response)
+        val result = evaluate(response)
+        return if (host == null) result
+        else result.copy(evidence = result.evidence + RaspEvidence("endpoint_host", host))
     }
 
-    /** Maps the backend's answer to a result. Pure. */
+    /** The backend's high-risk reasons; any of these makes the result DETECTED. */
+    private val highRiskReasons = setOf("blocked_country", "country_not_allowed", "tor", "proxy")
+
+    /**
+     * Maps the backend's answer to a result. Pure.
+     * - `risk_level` "high", or a blocked / not-allowed country, Tor or proxy → DETECTED;
+     * - "medium" (hosting IP, country changed since registration — soft) → SECURE with the reasons in evidence;
+     * - "low" → SECURE; country unknown → UNKNOWN with the backend's reason.
+     * Answers from an older backend without `risk_level` are decided from `flags`.
+     */
     fun evaluate(response: Response?): RaspCheckResult {
         if (response == null) return unknown("IP risk request failed (no answer from the backend)")
         if (response.status != 200) return unknown("IP risk endpoint answered HTTP ${response.status}")
@@ -81,22 +111,28 @@ public object RaspGeoIpProbes {
         val flags = body["flags"] as? Map<*, *> ?: return unknown("IP risk answer has no flags")
         val country = body["country"] as? String
         val source = body["source"] as? String
+        val riskLevel = body["risk_level"] as? String
+        val reasons = (body["reasons"] as? List<*>)?.filterIsInstance<String>().orEmpty()
         val blocked = flags["blocked_country"] as? Boolean
-        val proxy = flags["proxy"] as? Boolean
-        val hosting = flags["hosting"] as? Boolean
+        val proxy = (body["is_proxy"] ?: flags["proxy"]) as? Boolean
+        val hosting = (body["is_hosting"] ?: flags["hosting"]) as? Boolean
 
+        // Old signal names kept for existing consumers (GeoFilterService).
         val signals = buildList {
             if (blocked == true) add("blocked_country")
             if (proxy == true) add("proxy_flag")
         }
+        val high = riskLevel == "high" || signals.isNotEmpty() || reasons.any { it in highRiskReasons }
         val evidence = buildList {
             signals.forEach { add(RaspEvidence("high_risk_ip_signal", it)) }
             if (country != null) add(RaspEvidence("country", country))
+            if (riskLevel != null) add(RaspEvidence("risk_level", riskLevel, if (riskLevel == "medium") "soft" else null))
+            if (reasons.isNotEmpty()) add(RaspEvidence("reasons", reasons))
             if (source != null) add(RaspEvidence("country_source", source))
             if (hosting == true) add(RaspEvidence("hosting", true, "Datacenter / hosting IP"))
             add(RaspEvidence("proxy_flag_available", proxy != null))
         }
-        if (signals.isNotEmpty()) return RaspCheckResult.detected(DETECTOR_ID, evidence)
+        if (high) return RaspCheckResult.detected(DETECTOR_ID, evidence)
         if (country == null) {
             val reason = when (body["reason"] as? String) {
                 "private_address" -> "The backend saw a private address (same local network), so it cannot place the IP"
@@ -123,7 +159,12 @@ public object RaspGeoIpProbes {
                 return cached.result
             }
         }
-        val result = check(credential, HttpTransport, nowMillis)
+        val deviceKeyId = try {
+            EncryptedRegistrationStore(context).registeredKeyId()
+        } catch (e: Exception) {
+            null
+        }
+        val result = check(credential, HttpTransport, nowMillis, deviceKeyId)
         if (credential != null) cache.set(Cached(networkKey, nowMillis, result)) else cache.set(null)
         return result
     }

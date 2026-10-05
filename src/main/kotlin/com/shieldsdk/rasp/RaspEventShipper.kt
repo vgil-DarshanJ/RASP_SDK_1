@@ -244,6 +244,7 @@ public object RaspEventShipper {
                 key.asRegistrationKeySource(),
                 EncryptedRegistrationStore(appContext),
                 appContext.packageName,
+                signingCertSha256 = { RaspSigningProbes.signingCertSha256(appContext).ifEmpty { null } },
             )
             RaspEnvelopeDelivery({ credential }, registrar, stats = deliveryStats).also { delivery = it }
         }
