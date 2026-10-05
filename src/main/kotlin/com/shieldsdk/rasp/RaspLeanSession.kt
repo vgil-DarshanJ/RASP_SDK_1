@@ -18,17 +18,29 @@ public data class RaspLocationSnapshot(
     val latitude: Double, val longitude: Double, val accuracyMeters: Double? = null,
     val capturedAtMillis: Long = System.currentTimeMillis(),
     val isMock: Boolean? = null,
+    /** The location provider, when the host knows it (e.g. `gps`, `fused`); evidence only. */
+    val provider: String? = null,
+    /**
+     * `true` only when the user opted in to sharing location with the backend.
+     * Then the coordinates are attached to shipped results with
+     * `location_opt_in = true`; otherwise they are used on the device only
+     * (mock_location) and never shipped.
+     */
+    val shareWithBackend: Boolean = false,
 ) {
     public companion object {
         /** Builds a snapshot from an Android [Location], including its mock flag. */
         @JvmStatic
         @Suppress("DEPRECATION")
-        public fun fromLocation(location: Location): RaspLocationSnapshot = RaspLocationSnapshot(
+        @JvmOverloads
+        public fun fromLocation(location: Location, shareWithBackend: Boolean = false): RaspLocationSnapshot = RaspLocationSnapshot(
             latitude = location.latitude,
             longitude = location.longitude,
             accuracyMeters = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
             capturedAtMillis = location.time,
             isMock = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock else location.isFromMockProvider,
+            provider = location.provider,
+            shareWithBackend = shareWithBackend,
         )
     }
 }
@@ -237,18 +249,7 @@ public class RaspLeanSession private constructor(
         if (!RaspEventShipper.isConfigured()) return
         val now = System.currentTimeMillis()
         results.filter { shippingPolicy.shouldShip(it, now) }
-            .forEach { result -> RaspEventShipper.shipAsync(appContext, listOf(withLocation(result))) }
-    }
-
-    private fun withLocation(result: RaspCheckResult): RaspCheckResult {
-        val location = currentLocation ?: return result
-        if (!result.status.isThreat) return result
-        return result.copy(evidence = result.evidence + listOf(
-            RaspEvidence("latitude", location.latitude),
-            RaspEvidence("longitude", location.longitude),
-            RaspEvidence("location_accuracy_m", location.accuracyMeters),
-            RaspEvidence("location_captured_at_millis", location.capturedAtMillis),
-        ))
+            .forEach { result -> RaspEventShipper.shipAsync(appContext, listOf(withSharedLocation(result, currentLocation))) }
     }
 
     public fun dispose() { if (disposed.compareAndSet(false, true)) { scheduled?.cancel(false); scheduler.shutdownNow(); timedDetector.shutdown(); if (config.clipboardProtection) clipboard.disable() } }
@@ -271,6 +272,24 @@ public class RaspLeanSession private constructor(
  * baseline, change-detection, and detected-heartbeat contract can be unit
  * tested without a device, network, or Flutter channel.
  */
+/**
+ * Adds the location to a result about to be shipped — only when the user
+ * opted in ([RaspLocationSnapshot.shareWithBackend]). Then every shipped
+ * result carries `location_opt_in = true`, `latitude`, `longitude`,
+ * `location_accuracy_m` and `location_captured_at_millis`; the backend stores
+ * coordinates only with that flag. Without opt-in nothing is added.
+ */
+internal fun withSharedLocation(result: RaspCheckResult, location: RaspLocationSnapshot?): RaspCheckResult {
+    if (location == null || !location.shareWithBackend) return result
+    return result.copy(evidence = result.evidence + listOf(
+        RaspEvidence("location_opt_in", true),
+        RaspEvidence("latitude", location.latitude),
+        RaspEvidence("longitude", location.longitude),
+        RaspEvidence("location_accuracy_m", location.accuracyMeters),
+        RaspEvidence("location_captured_at_millis", location.capturedAtMillis),
+    ))
+}
+
 internal class RaspLeanShippingPolicy(private val heartbeatIntervalMillis: Long) {
     private val lastSignature = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val lastShippedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
