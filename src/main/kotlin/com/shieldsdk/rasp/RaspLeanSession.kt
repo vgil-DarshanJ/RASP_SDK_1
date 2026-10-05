@@ -46,6 +46,12 @@ public data class RaspLeanConfig(
     val hookDetection: Boolean = false, val riskyAppDetection: Boolean = false,
     val tamperDetection: Boolean = false, val untrustedInstallSourceDetection: Boolean = false,
     val repackagingDetection: Boolean = false, val expectedSigningCertSha256: String? = null,
+    /** `tamper`: installer packages accepted (e.g. `com.android.vending`); empty = installer not checked. */
+    val expectedInstallers: List<String> = emptyList(),
+    /** `tamper`: dex digest baked at build time (see RaspTamperAnalysis.dexSha256); `null` = not checked. */
+    val expectedClassesDexSha256: String? = null,
+    /** `tamper`: SHA-256 of `resources.arsc` baked at build time; `null` = not checked. */
+    val expectedResourcesArscSha256: String? = null,
     val vpnDetection: Boolean = false, val mitmDetection: Boolean = false,
     /** Host for the `mitm` SPKI pin check (e.g. your API host); `null` = no pin check. */
     val certificatePinHost: String? = null,
@@ -163,7 +169,11 @@ public class RaspLeanSession private constructor(
         add(config.reverseEngineeringToolsDetection, "re_tools") { RaspShieldCore.checkReverseEngineeringToolsBlocking(appContext) }
         add(config.hookDetection, "hook_detection") { RaspShieldCore.checkHookingBlocking(appContext) }
         add(config.riskyAppDetection, "risky_app") { RaspShieldCore.checkRiskyAppBlocking(appContext) }
-        add(config.tamperDetection, "tamper") { RaspShieldCore.checkTamperBlocking(appContext) }
+        add(config.tamperDetection, "tamper") {
+            RaspShieldCore.checkTamperBlocking(
+                appContext, config.expectedInstallers, config.expectedClassesDexSha256, config.expectedResourcesArscSha256,
+            )
+        }
         add(config.untrustedInstallSourceDetection, "untrusted_install_source") { RaspShieldCore.checkUntrustedInstallSourceBlocking(appContext) }
         add(config.repackagingDetection, "repackage") { RaspShieldCore.checkRepackagingBlocking(appContext) }
         add(config.vpnDetection, "vpn") { RaspShieldCore.checkVpnBlocking(appContext) }
