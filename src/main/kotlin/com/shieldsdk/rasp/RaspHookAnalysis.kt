@@ -130,8 +130,32 @@ object RaspHookAnalysis {
         val line = mapsLine.lowercase()
         val perms = line.split(Regex("\\s+")).getOrNull(1) ?: return false
         if (!perms.contains("x")) return false
+        if (isTrustedCodePath(mappedPath(mapsLine))) return false
         return suspiciousCodeDirectories.any { line.contains(it) }
     }
+
+    /**
+     * System-owned folders inside a [suspiciousCodeDirectories] entry that
+     * hold normal code. Since Android 12 an updated ART module keeps its
+     * compiled boot image in `/data/misc/apexdata/com.android.art/dalvik-cache/`
+     * (written only by the system, never by apps), so every updated phone maps
+     * `boot.oat` and framework `.odex` files from there.
+     */
+    val trustedCodeDirectories: List<String> = listOf(
+        "/data/misc/apexdata/com.android.art/dalvik-cache/",
+    )
+
+    /** The mapped path of a maps line (6th field onwards), or `""` for an anonymous region. */
+    fun mappedPath(mapsLine: String): String =
+        mapsLine.trim().split(Regex("\\s+"), limit = 6).getOrNull(5)?.trim().orEmpty()
+
+    /**
+     * `true` when [path] itself starts with a [trustedCodeDirectories] entry.
+     * A path that only *contains* one further in (for example
+     * `/data/local/tmp/data/misc/apexdata/...`) is not trusted.
+     */
+    fun isTrustedCodePath(path: String): Boolean =
+        trustedCodeDirectories.any { path.startsWith(it) && !path.contains("/../") }
 
     /** Suspicious executable mappings in a whole `/proc/self/maps` dump. */
     fun suspiciousExecutableMappings(mapsContent: String): List<String> =
@@ -154,9 +178,31 @@ object RaspHookAnalysis {
         return perms.length >= 3 && perms[1] == 'w' && perms[2] == 'x'
     }
 
-    /** Count of RWX regions in a maps dump. */
+    /**
+     * The Dart VM's own code pages (`[anon:dart-code]`). A Flutter debug build
+     * JIT-compiles into these RWX regions — the host app's own code, not a
+     * patch — so they are not counted towards [RWX_MAPPING_THRESHOLD].
+     * (Release builds are AOT-compiled and do not create them.)
+     */
+    fun isDartCodeRegion(mapsLine: String): Boolean = mappedPath(mapsLine) == "[anon:dart-code]"
+
+    /** An RWX region that counts towards [RWX_MAPPING_THRESHOLD]: every one except [isDartCodeRegion]. */
+    fun isCountedRwxMapping(mapsLine: String): Boolean = isRwxMapping(mapsLine) && !isDartCodeRegion(mapsLine)
+
+    /** Count of RWX regions in a maps dump, not counting the Dart VM's own code pages. */
     fun countRwxMappings(mapsContent: String): Int =
-        mapsContent.lineSequence().count { isRwxMapping(it) }
+        mapsContent.lineSequence().count { isCountedRwxMapping(it) }
+
+    /** RWX `[anon:dart-code]` regions left out of [countRwxMappings]. */
+    fun countDartCodeRwxRegions(mapsContent: String): Int =
+        mapsContent.lineSequence().count { isRwxMapping(it) && isDartCodeRegion(it) }
+
+    /** How close to [RWX_MAPPING_THRESHOLD] the count must be for `hook_near_threshold`. */
+    const val NEAR_THRESHOLD_MARGIN: Int = 2
+
+    /** `true` when [rwxCount] is within [NEAR_THRESHOLD_MARGIN] of the threshold without exceeding it. */
+    fun isNearRwxThreshold(rwxCount: Int): Boolean =
+        rwxCount in (RWX_MAPPING_THRESHOLD - NEAR_THRESHOLD_MARGIN)..RWX_MAPPING_THRESHOLD
 
     /**
      * How many RWX regions are unremarkable on a healthy ART process.
@@ -237,6 +283,8 @@ object RaspHookAnalysis {
          * `hook_native_method`.
          */
         val signalLines: Map<String, List<String>> = emptyMap(),
+        /** `[anon:dart-code]` RWX regions not counted in [rwxMappingCount]; `null` when maps were unreadable. */
+        val dartCodeRwxCount: Int? = null,
     )
 
     /** Longest maps line written to evidence. */
@@ -278,6 +326,7 @@ object RaspHookAnalysis {
         }
         var frameworks = emptyList<String>()
         var rwx: Int? = null
+        var dartCode: Int? = null
         var suspicious: Int? = null
         if (mapsContent != null) {
             frameworks = hookFrameworksIn(mapsContent)
@@ -291,16 +340,17 @@ object RaspHookAnalysis {
                 keep("hook_suspicious_lib_path", mapsContent.lineSequence().filter(::isSuspiciousExecutableMapping))
             }
             rwx = countRwxMappings(mapsContent)
+            dartCode = countDartCodeRwxRegions(mapsContent)
             if (rwx > RWX_MAPPING_THRESHOLD) {
                 signals.add("hook_rwx_mapping")
-                keep("hook_rwx_mapping", mapsContent.lineSequence().filter(::isRwxMapping))
+                keep("hook_rwx_mapping", mapsContent.lineSequence().filter(::isCountedRwxMapping))
             }
         }
         if (nativeMethodHooked == true) {
             signals.add("hook_native_method")
             keep("hook_native_method", hookedMethods.asSequence().map { "native method: $it" })
         }
-        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked, lines)
+        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked, lines, dartCode)
     }
 
     /**
@@ -339,7 +389,14 @@ object RaspHookAnalysis {
             }
             observation.frameworks.forEach { add(RaspEvidence("hook_framework", it)) }
             observation.rwxMappingCount?.let {
-                add(RaspEvidence("rwx_mapping_count", it, "threshold $RWX_MAPPING_THRESHOLD"))
+                val dart = observation.dartCodeRwxCount ?: 0
+                val note = "threshold $RWX_MAPPING_THRESHOLD" +
+                    if (dart > 0) "; $dart [anon:dart-code] regions not counted" else ""
+                add(RaspEvidence("rwx_mapping_count", it, note))
+                if (isNearRwxThreshold(it)) {
+                    add(RaspEvidence("hook_near_threshold", true,
+                        "rwx_mapping_count $it is within $NEAR_THRESHOLD_MARGIN of the threshold $RWX_MAPPING_THRESHOLD"))
+                }
             }
             observation.suspiciousExecMappingCount?.let { add(RaspEvidence("suspicious_exec_mapping_count", it)) }
             add(RaspEvidence("method_integrity", when (observation.nativeMethodHooked) {
