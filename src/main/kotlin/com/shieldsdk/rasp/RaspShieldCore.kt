@@ -417,22 +417,31 @@ object RaspShieldCore {
     // ── Tamper ─────────────────────────────────────────────────────────
 
     /**
-     * DETECTED when the install directory is missing or the signing
-     * certificate no longer matches the configured one. With no expected
-     * certificate configured nothing is compared, so the result is UNKNOWN
-     * ("not configured"), never SECURE. See [RaspSigningProbes.tamperVerdict].
+     * Signing certificate (against [configureExpectedSigningCertificate]),
+     * installer (against [installers]), APK location, and dex / resource-table
+     * hashes (against values baked at build time, when given). Any mismatch
+     * DETECTED; nothing configured UNKNOWN "not configured"; unreadable ERROR.
+     * See [RaspTamperAnalysis]. The first dex / arsc hash reads the whole APK
+     * once (cached per APK version).
      */
-    fun checkTamperBlocking(context: Context): RaspCheckResult = runGuarded("tamper") {
-        val expected = expectedSigningCertificateSha256
-        RaspSigningProbes.tamperVerdict(
-            expectedConfigured = expected != null,
-            mismatch = expected?.let { RaspSigningProbes.signatureMismatches(context, it) },
-            installMissing = RaspSigningProbes.installDirectoryMissing(context),
+    @JvmOverloads
+    fun checkTamperBlocking(
+        context: Context,
+        installers: Collection<String> = emptyList(),
+        classesDexSha256: String? = null,
+        resourcesArscSha256: String? = null,
+    ): RaspCheckResult = runGuarded("tamper") {
+        val expected = RaspTamperAnalysis.Expected(
+            signingCertSha256 = expectedSigningCertificateSha256,
+            installers = installers.map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+            classesDexSha256 = RaspTamperAnalysis.normalizeHex(classesDexSha256),
+            resourcesArscSha256 = RaspTamperAnalysis.normalizeHex(resourcesArscSha256),
         )
+        RaspTamperAnalysis.evaluate(RaspTamperAnalysis.observe(context, expected), expected)
     }
 
     fun checkTamperAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
-        runAsync(context, callback, ::checkTamperBlocking)
+        runAsync(context, callback) { checkTamperBlocking(it) }
 
     // ── Repackaging / signature ───────────────────────────────────────
 

@@ -93,21 +93,30 @@ class RaspTask410Test {
 
     // ── tamper ───────────────────────────────────────────────────────────
 
+    // Task 6.0 replaced RaspSigningProbes.tamperVerdict with RaspTamperAnalysis; same cases.
+    private val cert = "AB".repeat(32)
+    private fun tamperObs(certSeen: String? = cert, installMissing: Boolean? = false) = RaspTamperAnalysis.Observation(
+        signingCertSha256 = certSeen, installerReadable = true, installer = null,
+        apkPath = "/data/app/~~x==/com.example.rasp_trial-y==/base.apk", installDirectoryMissing = installMissing,
+    )
+    private fun tamper(o: RaspTamperAnalysis.Observation, expectedCert: String? = cert) =
+        RaspTamperAnalysis.evaluate(o, RaspTamperAnalysis.Expected(signingCertSha256 = expectedCert))
+
     @Test fun `tamper - no expected certificate configured is UNKNOWN not configured`() {
-        val r = RaspSigningProbes.tamperVerdict(expectedConfigured = false, mismatch = null, installMissing = false)
+        val r = tamper(tamperObs(), expectedCert = null)
         assertEquals(RaspCheckStatus.UNKNOWN, r.status)
         assertEquals("not configured", r.reason)
     }
 
     @Test fun `tamper - configured certificate decides, unreadable own certificate is ERROR`() {
-        assertEquals(RaspCheckStatus.SECURE, RaspSigningProbes.tamperVerdict(true, mismatch = false, installMissing = false).status)
-        assertEquals(RaspCheckStatus.DETECTED, RaspSigningProbes.tamperVerdict(true, mismatch = true, installMissing = false).status)
-        assertEquals(RaspCheckStatus.ERROR, RaspSigningProbes.tamperVerdict(true, mismatch = null, installMissing = false).status)
+        assertEquals(RaspCheckStatus.SECURE, tamper(tamperObs()).status)
+        assertEquals(RaspCheckStatus.DETECTED, tamper(tamperObs(certSeen = "CD".repeat(32))).status)
+        assertEquals(RaspCheckStatus.ERROR, tamper(tamperObs(certSeen = null)).status)
     }
 
     @Test fun `tamper - missing install directory is DETECTED even without a certificate, unreadable one is not SECURE`() {
-        assertEquals(RaspCheckStatus.DETECTED, RaspSigningProbes.tamperVerdict(false, mismatch = null, installMissing = true).status)
-        assertEquals(RaspCheckStatus.UNKNOWN, RaspSigningProbes.tamperVerdict(true, mismatch = false, installMissing = null).status)
+        assertEquals(RaspCheckStatus.DETECTED, tamper(tamperObs(installMissing = true), expectedCert = null).status)
+        assertEquals(RaspCheckStatus.ERROR, tamper(tamperObs(installMissing = null)).status)
     }
 
     // ── root_jailbreak ───────────────────────────────────────────────────
