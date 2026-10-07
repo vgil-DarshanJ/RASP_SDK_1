@@ -184,7 +184,10 @@ class RaspHookProbes(private val context: Context) {
             integrity.values.any { it == MethodIntegrity.INTACT } -> false
             else -> null
         }
-        return RaspHookAnalysis.observe(readMaps(), nativeHooked, hooked)
+        // Native core first (it reads /proc/self/maps itself, bounded); the
+        // Kotlin read and rules when it is not loaded or cannot answer.
+        val summary = RaspNative.hookMapsScan(null) ?: readMaps()?.let(RaspHookAnalysis::summarizeMaps)
+        return RaspHookAnalysis.observeSummary(summary, nativeHooked, hooked)
     }
 
     /**

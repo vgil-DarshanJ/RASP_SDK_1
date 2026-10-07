@@ -125,22 +125,48 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
      * this is for callers that need to tell UNAVAILABLE apart from CLEAN.
      */
     fun rootAssessment(): Pair<List<String>, RaspRootAnalysis.RootVerdict> {
+        // Native core (Task 9.0): the file and mount-table checks in Rust,
+        // same lists and rules; the Kotlin reads when it is not in use.
+        RaspNative.rootScan()?.let { native ->
+            val hits = rootSignalsUsing(
+                suBinary = { native.suBinary },
+                magiskArtifact = { native.magiskArtifact },
+                systemWritable = { native.systemWritable },
+                busybox = { native.busybox },
+                mountNamespace = { native.mountNamespace },
+            )
+            val access = if (native.mountsReadable) RaspRootAnalysis.MountTableAccess.READABLE
+            else RaspRootAnalysis.MountTableAccess.NOT_ACCESSIBLE
+            return hits to RaspRootAnalysis.classifyRootVerdict(hits, access)
+        }
         val mounts = readMounts()
-        val hits = rootSignalsUsing(mounts)
+        val hits = rootSignalsUsing(
+            suBinary = { RaspRootAnalysis.suPaths.any { fileExistsQuietly(it) } },
+            magiskArtifact = { RaspRootAnalysis.magiskPaths.any { fileExistsQuietly(it) } },
+            systemWritable = { RaspRootAnalysis.anyProtectedPartitionWritable(mounts) },
+            busybox = { RaspRootAnalysis.busyboxPaths.any { fileExistsQuietly(it) } },
+            mountNamespace = { RaspRootAnalysis.mountsIndicateRoot(mounts) },
+        )
         val access = RaspRootAnalysis.classifyMountTable(mounts)
         return hits to RaspRootAnalysis.classifyRootVerdict(hits, access)
     }
 
     /**
-     * [rootSignals], but against an already-read mount table rather than
-     * reading it again — the shared implementation [rootSignals] and
-     * [rootAssessment] both call.
+     * [rootSignals] with the file and mount-table findings supplied (Kotlin
+     * reads or the native core), in the same order and inside the same single
+     * `try` — the shared implementation of [rootAssessment].
      */
-    private fun rootSignalsUsing(mounts: String): List<String> {
+    private fun rootSignalsUsing(
+        suBinary: () -> Boolean,
+        magiskArtifact: () -> Boolean,
+        systemWritable: () -> Boolean,
+        busybox: () -> Boolean,
+        mountNamespace: () -> Boolean,
+    ): List<String> {
         val hits = mutableListOf<String>()
         try {
-            if (RaspRootAnalysis.suPaths.any { fileExistsQuietly(it) }) hits.add("su_binary")
-            if (RaspRootAnalysis.magiskPaths.any { fileExistsQuietly(it) }) {
+            if (suBinary()) hits.add("su_binary")
+            if (magiskArtifact()) {
                 hits.add("magisk_artifact")
             }
             val whichSuLine = RaspProcessUtils.firstLineOf(arrayOf("which", "su"))
@@ -156,9 +182,9 @@ class RaspDeviceIntegrityProbes(private val context: Context) {
             if (RaspRootAnalysis.propIndicatesInsecure(readProp("ro.secure"))) {
                 hits.add("ro_insecure")
             }
-            if (RaspRootAnalysis.anyProtectedPartitionWritable(mounts)) hits.add("system_writable")
-            if (RaspRootAnalysis.busyboxPaths.any { fileExistsQuietly(it) }) hits.add("busybox")
-            if (RaspRootAnalysis.mountsIndicateRoot(mounts)) hits.add("mount_namespace")
+            if (systemWritable()) hits.add("system_writable")
+            if (busybox()) hits.add("busybox")
+            if (mountNamespace()) hits.add("mount_namespace")
         } catch (e: Exception) {
             // Never let a probe crash the host app; partial evidence still counts.
         }

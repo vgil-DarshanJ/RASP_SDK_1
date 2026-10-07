@@ -310,12 +310,78 @@ object RaspHookAnalysis {
     }
 
     /**
+     * Everything the hook scan takes from one maps dump — the part the native
+     * core (`native/src/maps.rs`) computes too. Lines are evidence lines
+     * ([evidenceLine]), at most [LINES_PER_SIGNAL] each, collected whether or
+     * not the signal fires.
+     */
+    data class MapsSummary(
+        val frameworks: List<String>,
+        val frameworkLines: List<String>,
+        val suspiciousExecMappingCount: Int,
+        val suspiciousLines: List<String>,
+        val rwxMappingCount: Int,
+        val rwxLines: List<String>,
+        val dartCodeRwxCount: Int,
+    ) {
+        /** The JSON fields, for the parity fixtures. */
+        fun toMap(): Map<String, Any?> = linkedMapOf(
+            "frameworks" to frameworks,
+            "frameworkLines" to frameworkLines,
+            "suspiciousExecMappingCount" to suspiciousExecMappingCount.toLong(),
+            "suspiciousLines" to suspiciousLines,
+            "rwxMappingCount" to rwxMappingCount.toLong(),
+            "rwxLines" to rwxLines,
+            "dartCodeRwxCount" to dartCodeRwxCount.toLong(),
+        )
+
+        companion object {
+            /** Parses the native core's JSON; `null` when malformed. */
+            fun fromJson(json: String): MapsSummary? = try {
+                val o = RaspJson.parse(json) as Map<*, *>
+                fun strings(key: String) = (o[key] as List<*>).map { it as String }
+                fun count(key: String) = (o[key] as Long).toInt()
+                MapsSummary(
+                    strings("frameworks"), strings("frameworkLines"),
+                    count("suspiciousExecMappingCount"), strings("suspiciousLines"),
+                    count("rwxMappingCount"), strings("rwxLines"), count("dartCodeRwxCount"),
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /** The Kotlin [MapsSummary] of [mapsContent] (reference for the native one). */
+    fun summarizeMaps(mapsContent: String): MapsSummary {
+        fun keep(matched: Sequence<String>) = matched.take(LINES_PER_SIGNAL).map(::evidenceLine).toList()
+        val frameworks = hookFrameworksIn(mapsContent)
+        return MapsSummary(
+            frameworks = frameworks,
+            frameworkLines = if (frameworks.isEmpty()) emptyList()
+            else keep(mapsContent.lineSequence().filter { hookFrameworksIn(it).isNotEmpty() }),
+            suspiciousExecMappingCount = suspiciousExecutableMappings(mapsContent).size,
+            suspiciousLines = keep(mapsContent.lineSequence().filter(::isSuspiciousExecutableMapping)),
+            rwxMappingCount = countRwxMappings(mapsContent),
+            rwxLines = keep(mapsContent.lineSequence().filter(::isCountedRwxMapping)),
+            dartCodeRwxCount = countDartCodeRwxRegions(mapsContent),
+        )
+    }
+
+    /**
      * Turns raw readings into signals. Pure: the probe class supplies the
      * maps text and the method-integrity reading ([hookedMethods]: names of
      * critical methods that report `native`).
      */
     fun observe(
         mapsContent: String?,
+        nativeMethodHooked: Boolean?,
+        hookedMethods: List<String> = emptyList(),
+    ): Observation = observeSummary(mapsContent?.let(::summarizeMaps), nativeMethodHooked, hookedMethods)
+
+    /** [observe] from a [MapsSummary] (Kotlin or native); `null` = maps unreadable. */
+    fun observeSummary(
+        summary: MapsSummary?,
         nativeMethodHooked: Boolean?,
         hookedMethods: List<String> = emptyList(),
     ): Observation {
@@ -328,29 +394,29 @@ object RaspHookAnalysis {
         var rwx: Int? = null
         var dartCode: Int? = null
         var suspicious: Int? = null
-        if (mapsContent != null) {
-            frameworks = hookFrameworksIn(mapsContent)
+        if (summary != null) {
+            frameworks = summary.frameworks
             if (frameworks.isNotEmpty()) {
                 signals.add("hook_framework_lib")
-                keep("hook_framework_lib", mapsContent.lineSequence().filter { hookFrameworksIn(it).isNotEmpty() })
+                lines["hook_framework_lib"] = summary.frameworkLines
             }
-            suspicious = suspiciousExecutableMappings(mapsContent).size
+            suspicious = summary.suspiciousExecMappingCount
             if (suspicious > 0) {
                 signals.add("hook_suspicious_lib_path")
-                keep("hook_suspicious_lib_path", mapsContent.lineSequence().filter(::isSuspiciousExecutableMapping))
+                lines["hook_suspicious_lib_path"] = summary.suspiciousLines
             }
-            rwx = countRwxMappings(mapsContent)
-            dartCode = countDartCodeRwxRegions(mapsContent)
+            rwx = summary.rwxMappingCount
+            dartCode = summary.dartCodeRwxCount
             if (rwx > RWX_MAPPING_THRESHOLD) {
                 signals.add("hook_rwx_mapping")
-                keep("hook_rwx_mapping", mapsContent.lineSequence().filter(::isCountedRwxMapping))
+                lines["hook_rwx_mapping"] = summary.rwxLines
             }
         }
         if (nativeMethodHooked == true) {
             signals.add("hook_native_method")
             keep("hook_native_method", hookedMethods.asSequence().map { "native method: $it" })
         }
-        return Observation(signals, frameworks, rwx, suspicious, mapsContent != null, nativeMethodHooked, lines, dartCode)
+        return Observation(signals, frameworks, rwx, suspicious, summary != null, nativeMethodHooked, lines, dartCode)
     }
 
     /**

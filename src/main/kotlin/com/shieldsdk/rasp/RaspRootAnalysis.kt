@@ -358,6 +358,58 @@ object RaspRootAnalysis {
         else -> RootVerdict.CLEAN
     }
 
+    // ── Native core (Task 9.0) ─────────────────────────────────────────
+
+    /**
+     * The mount-table half of a root scan: the Kotlin reference for the native
+     * core's `analyze_mounts` (native/src/root.rs), compared on the parity
+     * fixtures.
+     */
+    data class MountFindings(
+        val mountsReadable: Boolean,
+        val systemWritable: Boolean,
+        val mountNamespace: Boolean,
+        val writablePartitions: List<String>,
+    ) {
+        fun toMap(): Map<String, Any?> = linkedMapOf(
+            "mountsReadable" to mountsReadable,
+            "systemWritable" to systemWritable,
+            "mountNamespace" to mountNamespace,
+            "writablePartitions" to writablePartitions,
+        )
+    }
+
+    fun analyzeMounts(mountsContent: String): MountFindings = MountFindings(
+        mountsReadable = classifyMountTable(mountsContent) == MountTableAccess.READABLE,
+        systemWritable = anyProtectedPartitionWritable(mountsContent),
+        mountNamespace = mountsIndicateRoot(mountsContent),
+        writablePartitions = writableProtectedPartitions(mountsContent),
+    )
+
+    /** One native root scan: the file checks plus [MountFindings] of `/proc/mounts`. */
+    data class NativeRootScan(
+        val suBinary: Boolean,
+        val magiskArtifact: Boolean,
+        val busybox: Boolean,
+        val mountsReadable: Boolean,
+        val systemWritable: Boolean,
+        val mountNamespace: Boolean,
+    ) {
+        companion object {
+            /** Parses the native core's JSON; `null` when malformed. */
+            fun fromJson(json: String): NativeRootScan? = try {
+                val o = RaspJson.parse(json) as Map<*, *>
+                fun flag(key: String) = o[key] as Boolean
+                NativeRootScan(
+                    flag("suBinary"), flag("magiskArtifact"), flag("busybox"),
+                    flag("mountsReadable"), flag("systemWritable"), flag("mountNamespace"),
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
     /**
      * Every signal id this detector can emit, in the order
      * `RaspDeviceIntegrityProbes.rootSignals()` produces them.
