@@ -101,8 +101,9 @@ dependencies: `jni` 0.21, `sha2` 0.10.
 
 ## Known limits
 
-- JitPack (`jitpack.yml`) has no Rust toolchain: a JitPack build of this
-  repo now needs Rust and cargo-ndk installed in its build image.
+- Releases are built by `.github/workflows/release.yml` (GitHub Packages and
+  a release asset); `jitpack.yml` installs the toolchain but is not
+  verified. See `docs/PUBLISHING.md`.
 - Kotlin and Rust agree on the fixtures (ASCII and common non-ASCII text);
   for maps lines longer than 8192 characters the native core looks at the
   first 8192 only.
