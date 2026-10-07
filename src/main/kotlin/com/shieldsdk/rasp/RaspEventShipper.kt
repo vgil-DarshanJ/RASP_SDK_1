@@ -73,6 +73,12 @@ public object RaspEventShipper {
     @Volatile
     private var delivery: RaspEnvelopeDelivery? = null
 
+    @Volatile
+    private var registrar: RaspDeviceRegistrar? = null
+
+    @Volatile
+    private var riskDelivery: RaspRiskEventDelivery? = null
+
     private val deliveryStats = RaspDeliveryStats()
 
     /**
@@ -157,6 +163,8 @@ public object RaspEventShipper {
         offlineQueue = null
         envelopeBuilder = null
         delivery = null
+        registrar = null
+        riskDelivery = null
         useEvidenceEnvelope = false
     }
 
@@ -238,16 +246,28 @@ public object RaspEventShipper {
     }
 
     private fun delivery(appContext: Context): RaspEnvelopeDelivery = synchronized(this) {
-        delivery ?: run {
-            val key = deviceKey ?: RaspDeviceKey(appContext).also { deviceKey = it }
-            val registrar = RaspDeviceRegistrar(
-                key.asRegistrationKeySource(),
+        delivery ?: RaspEnvelopeDelivery({ credential }, registrar(appContext), stats = deliveryStats).also { delivery = it }
+    }
+
+    /** One registrar per process, shared by envelope and risk-event delivery. */
+    private fun registrar(appContext: Context): RaspDeviceRegistrar = synchronized(this) {
+        registrar ?: run {
+            RaspDeviceRegistrar(
+                deviceKey(appContext).asRegistrationKeySource(),
                 EncryptedRegistrationStore(appContext),
                 appContext.packageName,
                 signingCertSha256 = { RaspSigningProbes.signingCertSha256(appContext).ifEmpty { null } },
-            )
-            RaspEnvelopeDelivery({ credential }, registrar, stats = deliveryStats).also { delivery = it }
+            ).also { registrar = it }
         }
+    }
+
+    internal fun deviceKey(appContext: Context): RaspDeviceKey = synchronized(this) {
+        deviceKey ?: RaspDeviceKey(appContext).also { deviceKey = it }
+    }
+
+    /** Sender for Task 8.1 risk events (`POST /v1/risk/events`). */
+    internal fun riskEventDelivery(appContext: Context): RaspRiskEventDelivery = synchronized(this) {
+        riskDelivery ?: RaspRiskEventDelivery({ credential }, registrar(appContext)).also { riskDelivery = it }
     }
 
     /**

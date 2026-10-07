@@ -21,6 +21,15 @@
         <package android:name="de.robv.android.xposed"/>
         <package android:name="com.saurik.substrate"/>
 
+        <!-- Task 8.1 — remote_control_app / otp_forwarding_risk built-in
+             lists (RaspRemoteControlProbes.builtInPackages,
+             RaspOtpForwardingProbes.builtInAutoForwardPackages): presence
+             checks only, via PackageManager.getPackageInfo(). -->
+        <package android:name="com.sand.airdroid"/>
+        <package android:name="com.carriez.flutter_hbb"/>
+        <package android:name="com.frzinapps.smsforward"/>
+        <package android:name="tech.bogomolov.incomingsmsgateway"/>
+
         <!-- Phase 2 — reverse-engineering-tools check
              (RaspReverseEngineeringToolsProbe). These 7 were MISSING from
              the pre-refactor manifest, which declared only 2 of the 9

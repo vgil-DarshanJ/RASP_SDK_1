@@ -24,6 +24,12 @@ public data class RaspEventCredential(
     val apiKey: String,
     val apiSecret: String,
     val ingestionUrl: String,
+    /**
+     * Per-application salt (hex) for hashing account, session and beneficiary
+     * ids (Task 8.1, [RaspAccountHasher]); `null` in credentials issued before
+     * it existed.
+     */
+    val accountHashSalt: String? = null,
 )
 
 public object RaspEventCredentialParser {
@@ -42,7 +48,8 @@ public object RaspEventCredentialParser {
         ) {
             null
         } else {
-            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl)
+            val salt = obj.optString("account_hash_salt", "").takeIf(RaspAccountHasher::isValidSalt)
+            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl, salt)
         }
     } catch (e: Exception) {
         null

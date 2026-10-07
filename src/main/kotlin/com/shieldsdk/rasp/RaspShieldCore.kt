@@ -987,4 +987,53 @@ object RaspShieldCore {
         runGuarded(RaspMalwareReputationProbes.DETECTOR_ID) {
             RaspMalwareReputationProbes.evaluate(RaspMalwareReputationProbes.observe(context, listJson, publicKeyBase64))
         }
+
+    // ── Fraud signals (Task 8.1) ───────────────────────────────────────
+
+    /** Remote-control / screen-sharing apps and active cast or recording. See [RaspRemoteControlProbes]. */
+    @JvmOverloads
+    fun checkRemoteControlAppBlocking(context: Context, listJson: String? = null, publicKeyBase64: String? = null): RaspCheckResult =
+        runGuarded(RaspRemoteControlProbes.DETECTOR_ID) {
+            RaspRemoteControlProbes.evaluate(RaspRemoteControlProbes.observe(context, listJson, publicKeyBase64))
+        }
+
+    /** Screen capture or cast while the app is in the foreground. See [RaspScreenSharingProbes]. */
+    fun checkScreenSharingRiskBlocking(context: Context): RaspCheckResult =
+        runGuarded(RaspScreenSharingProbes.DETECTOR_ID) {
+            RaspScreenSharingProbes.evaluate(RaspScreenSharingProbes.observe(context))
+        }
+
+    /** Accessibility abuse, unknown notification listener, overlay, remote-control app. See [RaspOtpInterceptionProbes]. */
+    @JvmOverloads
+    fun checkOtpInterceptionRiskBlocking(
+        context: Context,
+        screenGuard: RaspScreenGuard? = null,
+        listenerAllowlist: List<String> = emptyList(),
+        remoteListJson: String? = null,
+        remoteListKey: String? = null,
+    ): RaspCheckResult = runGuarded(RaspOtpInterceptionProbes.DETECTOR_ID) {
+        RaspOtpInterceptionProbes.evaluate(
+            RaspOtpInterceptionProbes.observe(context, screenGuard, listenerAllowlist, remoteListJson, remoteListKey),
+        )
+    }
+
+    /** Apps with SMS permissions or notification-listener access; never reads messages. See [RaspSmsReaderProbes]. */
+    @JvmOverloads
+    fun checkSmsReaderAbuseBlocking(context: Context, allowlist: List<String> = emptyList()): RaspCheckResult =
+        runGuarded(RaspSmsReaderProbes.DETECTOR_ID) {
+            RaspSmsReaderProbes.evaluate(RaspSmsReaderProbes.observe(context, allowlist))
+        }
+
+    /** Risk hint only. See [RaspOtpForwardingProbes]. */
+    @JvmOverloads
+    fun checkOtpForwardingRiskBlocking(
+        context: Context,
+        extraAutoForwardPackages: List<String> = emptyList(),
+        remoteListJson: String? = null,
+        remoteListKey: String? = null,
+    ): RaspCheckResult = runGuarded(RaspOtpForwardingProbes.DETECTOR_ID) {
+        RaspOtpForwardingProbes.evaluate(
+            RaspOtpForwardingProbes.observe(context, extraAutoForwardPackages, remoteListJson, remoteListKey),
+        )
+    }
 }

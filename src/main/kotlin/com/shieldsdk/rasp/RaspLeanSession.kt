@@ -95,6 +95,30 @@ public data class RaspLeanConfig(
     val useEvidenceEnvelope: Boolean = false,
     val pollIntervalMillis: Long = 4_000,
     val heartbeatIntervalMillis: Long = 20_000, val detectorTimeoutMillis: Long = 6_000,
+    // Task 8.1 fraud signals — all off by default
+    val otpInterceptionDetection: Boolean = false, val smsReaderAbuseDetection: Boolean = false,
+    val otpForwardingDetection: Boolean = false, val remoteControlAppDetection: Boolean = false,
+    val screenSharingDetection: Boolean = false,
+    /** Notification-listener packages to trust (e.g. a wearable companion app). */
+    val notificationListenerAllowlist: List<String> = emptyList(),
+    /** `sms_reader_abuse`: packages allowed to hold SMS permissions. */
+    val smsAppAllowlist: List<String> = emptyList(),
+    /** `otp_forwarding_risk`: extra SMS auto-forward packages (declare them in `<queries>`). */
+    val autoForwardPackages: List<String> = emptyList(),
+    /** `remote_control_app`: signed extra package list, same format as the malware reputation list. */
+    val remoteControlListJson: String? = null,
+    /** Ed25519 key for [remoteControlListJson]. */
+    val remoteControlListPublicKey: String? = null,
+    // Task 8.1 session risk and transaction API — off by default
+    /** Computes the session risk every tick and enables reportSession/reportTransaction/signTransaction. */
+    val sessionRiskScoring: Boolean = false,
+    val riskMediumThreshold: Int = 30, val riskHighThreshold: Int = 60,
+    /** Also recommend step-up at or above this score; `null` = only at HIGH. */
+    val stepUpThreshold: Int? = null,
+    /** Stricter profile: step-up also at MEDIUM and UNKNOWN. Can be changed at runtime. */
+    val highRiskTransactionMode: Boolean = false,
+    /** Salt (hex) for account/session/beneficiary hashes when the credential has no `account_hash_salt`. */
+    val accountHashSalt: String? = null,
 )
 
 public data class RaspLeanState(
@@ -102,6 +126,8 @@ public data class RaspLeanState(
     val usbDeviceCount: Int = 0, val usbDebuggingEnabled: Boolean? = null,
     val developerModeEnabled: Boolean? = null, val clipboardActive: Boolean? = null,
     val clipboardChangeCount: Int = 0, val extendedDetectors: Map<String, RaspCheckResult> = emptyMap(),
+    /** Session risk (Task 8.1); `null` unless `sessionRiskScoring` is on. */
+    val risk: RaspRiskAssessment? = null,
 ) { public companion object { @JvmField val INITIAL = RaspLeanState() } }
 
 public fun interface RaspLeanStateListener { fun onStateChanged(state: RaspLeanState) }
@@ -132,6 +158,51 @@ public class RaspLeanSession private constructor(
 
     public fun setListener(value: RaspLeanStateListener?) { listener = value }
 
+    // ── Task 8.1: session risk and transaction API ─────────────────────
+
+    @Volatile private var highRiskMode = config.highRiskTransactionMode
+    @Volatile private var lastExtended: Collection<RaspCheckResult> = emptyList()
+    @Volatile private var risk: RaspRiskAssessment = RaspRiskAssessment.NOT_EVALUATED
+
+    private fun riskPolicy() = RaspRiskPolicy(config.riskMediumThreshold, config.riskHighThreshold, config.stepUpThreshold, highRiskMode)
+
+    private val fraud: RaspFraudApi? by lazy {
+        if (!config.sessionRiskScoring) null
+        else RaspFraudApi(
+            signer = RaspEventShipper.deviceKey(appContext).asEnvelopeSigner(),
+            counterStore = RaspEncryptedCounterStore(appContext),
+            appId = appContext.packageName,
+            saltProvider = { config.accountHashSalt ?: RaspEventShipper.currentCredential()?.accountHashSalt },
+            riskProvider = { risk },
+            sender = { json -> RaspEventShipper.isConfigured() && RaspEventShipper.riskEventDelivery(appContext).sendAsync(json) },
+            locationProvider = { currentLocation },
+        )
+    }
+
+    private fun fraudApi(): RaspFraudApi =
+        fraud ?: throw IllegalStateException("Session risk is off: set RaspLeanConfig.sessionRiskScoring = true")
+
+    /** The latest session risk; UNKNOWN until the first tick (or when scoring is off). */
+    public fun currentRisk(): RaspRiskAssessment = risk
+
+    /** Turns the stricter high-risk transaction profile on or off; recomputes the risk now. */
+    public fun setHighRiskTransactionMode(enabled: Boolean) {
+        highRiskMode = enabled
+        if (config.sessionRiskScoring) risk = RaspRiskScore.assess(lastExtended, riskPolicy())
+    }
+
+    /** Ids are hashed at once (HMAC-SHA256, per-app salt) and never stored. Blocking (signing). */
+    public fun reportSession(accountId: String, sessionId: String, event: RaspSessionEvent): RaspSessionReport =
+        fraudApi().reportSession(accountId, sessionId, event)
+
+    /** Amount stays on the device except inside the signed binding. Blocking (signing). */
+    public fun reportTransaction(amount: String, currency: String, beneficiaryId: String, channel: String): RaspTransactionReport =
+        fraudApi().reportTransaction(amount, currency, beneficiaryId, channel)
+
+    /** Signs the transaction binding with the device key; nothing is sent. Blocking (signing). */
+    public fun signTransaction(amount: String, currency: String, beneficiaryId: String): RaspSignedTransaction =
+        fraudApi().signTransaction(amount, currency, beneficiaryId)
+
     /** Supplies a trusted server time for `time_spoofing` (e.g. from an HTTP `Date` header). */
     public fun setServerTime(serverTimeMillis: Long) { timeMonitor.setServerTime(serverTimeMillis) }
     public fun refreshNow() { if (!disposed.get()) scheduler.execute(::tick) }
@@ -157,9 +228,13 @@ public class RaspLeanSession private constructor(
             val clipActive = if (config.clipboardProtection) clipboard.isActive() else null
             val clipCount = if (config.clipboardProtection) (clipboard.drainEvidence()["change_count"] as? Int ?: 0) else 0
             val extended = runExtended()
+            if (config.sessionRiskScoring) {
+                lastExtended = extended.values
+                risk = RaspRiskScore.assess(extended.values, riskPolicy())
+            }
             current = RaspLeanState(active, usbConnected, usbCount, adb,
                 if (config.usbDetection || config.adbDetection) AdbGuard.isDeveloperModeEnabled(appContext) else null,
-                clipActive, clipCount, extended)
+                clipActive, clipCount, extended, if (config.sessionRiskScoring) risk else null)
             runCatching { listener?.onStateChanged(current) }
             ship(controlResults(active, usbConnected, usbCount, adb, clipActive, clipCount) + extended.values)
         }
@@ -219,6 +294,26 @@ public class RaspLeanSession private constructor(
         add(config.malwareReputationDetection, RaspMalwareReputationProbes.DETECTOR_ID) {
             RaspShieldCore.checkMalwareReputationBlocking(appContext, config.malwareReputationListJson, config.malwareReputationPublicKey)
         }
+        add(config.remoteControlAppDetection, RaspRemoteControlProbes.DETECTOR_ID) {
+            RaspShieldCore.checkRemoteControlAppBlocking(appContext, config.remoteControlListJson, config.remoteControlListPublicKey)
+        }
+        add(config.screenSharingDetection, RaspScreenSharingProbes.DETECTOR_ID) {
+            RaspShieldCore.checkScreenSharingRiskBlocking(appContext)
+        }
+        add(config.otpInterceptionDetection, RaspOtpInterceptionProbes.DETECTOR_ID) {
+            RaspShieldCore.checkOtpInterceptionRiskBlocking(
+                appContext, screenGuard, config.notificationListenerAllowlist,
+                config.remoteControlListJson, config.remoteControlListPublicKey,
+            )
+        }
+        add(config.smsReaderAbuseDetection, RaspSmsReaderProbes.DETECTOR_ID) {
+            RaspShieldCore.checkSmsReaderAbuseBlocking(appContext, config.smsAppAllowlist + config.notificationListenerAllowlist)
+        }
+        add(config.otpForwardingDetection, RaspOtpForwardingProbes.DETECTOR_ID) {
+            RaspShieldCore.checkOtpForwardingRiskBlocking(
+                appContext, config.autoForwardPackages, config.remoteControlListJson, config.remoteControlListPublicKey,
+            )
+        }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
     }
 
@@ -257,6 +352,10 @@ public class RaspLeanSession private constructor(
     public companion object {
         @JvmStatic @JvmOverloads public fun start(context: Context, config: RaspLeanConfig, activityProvider: (() -> Activity?)? = null, screenGuardForOverlay: RaspScreenGuard? = null): RaspLeanSession {
             require(config.pollIntervalMillis > 0) { "pollIntervalMillis must be positive" }
+            if (config.sessionRiskScoring) {
+                // Validates the thresholds up front.
+                RaspRiskPolicy(config.riskMediumThreshold, config.riskHighThreshold, config.stepUpThreshold)
+            }
             val session = RaspLeanSession(context.applicationContext ?: context, config, activityProvider, screenGuardForOverlay)
             session.applyConfig()
             // Always enqueue the initial scan; never perform network/disk work on the caller thread.
