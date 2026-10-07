@@ -186,6 +186,13 @@ class RaspTask81Test {
         assertEquals(RaspCheckStatus.SECURE, interception(touchObscured = null).status)
     }
 
+    @Test fun `otp_interception_risk - an overlay-permission holder is evidence only, not the overlay signal`() {
+        val r = interception(touchObscured = false, overlayHolder = true, remote = listOf("com.anydesk.anydeskandroid"))
+        assertEquals(RaspCheckStatus.SECURE, r.status)
+        assertEquals(listOf<Any?>(true), r.values("overlay_permission_holder"))
+        assertEquals(listOf<Any?>("remote_control_app"), r.values("contributing_signal"))
+    }
+
     @Test fun `notification listener setting is parsed into package names`() {
         assertEquals(
             listOf("com.a", "com.b"),

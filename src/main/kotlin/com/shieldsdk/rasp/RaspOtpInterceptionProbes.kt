@@ -10,12 +10,14 @@ import android.content.Context
  * |---|---|
  * | `accessibility_abuse` — a non-allowlisted accessibility service that can read windows or perform gestures | hard |
  * | `unknown_notification_listener` — a visible, non-system, non-allowlisted app holds notification-listener access (it can read OTP notifications) | hard |
- * | `overlay` — the window was touched through an overlay (needs the screen guard), or an app holding the overlay permission was seen | soft |
+ * | `overlay` — the window was touched through an overlay (the screen guard's touch-obscured flag; undecided until a touch is seen) | soft |
  * | `remote_control_app` — see [RaspRemoteControlProbes] | soft |
  *
  * 1 hard or 2 soft → DETECTED. A listener whose package is not visible is
- * undecided. Evidence names every contributing signal. A risk signal, not
- * proof that an OTP was read.
+ * undecided. Evidence names every contributing signal. An installed app that
+ * holds the overlay permission is evidence only (`overlay_permission_holder`),
+ * as in the `overlay` detector: it does not show that anything covers this
+ * app. A risk signal, not proof that an OTP was read.
  */
 public object RaspOtpInterceptionProbes {
     const val DETECTOR_ID = "otp_interception_risk"
@@ -27,9 +29,9 @@ public object RaspOtpInterceptionProbes {
         /** Listener packages with their facts; `null` = unreadable. */
         val notificationListeners: List<RaspAppFacts>?,
         val listenerAllowlist: List<String>,
-        /** Touch through an overlay seen by the screen guard; `null` = no guard attached. */
+        /** Touch through an overlay seen by the screen guard; `null` = no guard or no touch yet. */
         val touchObscured: Boolean?,
-        /** An overlay-permission holder was seen (`true`), else `null` (a scan cannot prove absence). */
+        /** An overlay-permission holder was seen (`true`), else `null` (a scan cannot prove absence). Evidence only. */
         val overlayPermissionHolder: Boolean?,
         /** Installed remote-control packages; `null` = could not be checked. */
         val remoteControlPackages: List<String>?,
@@ -44,10 +46,10 @@ public object RaspOtpInterceptionProbes {
         }
         val unknownListeners = listenerClasses?.filter { it.second == RaspFraudEnvironment.ListenerClass.UNKNOWN_APP }?.map { it.first }
         val unverified = listenerClasses?.filter { it.second == RaspFraudEnvironment.ListenerClass.UNVERIFIED }?.map { it.first }
-        val overlayState = when {
-            o.touchObscured == true || o.overlayPermissionHolder == true -> RaspSignalState.PRESENT
-            o.touchObscured == false -> RaspSignalState.ABSENT
-            else -> RaspSignalState.UNDECIDED
+        val overlayState = when (o.touchObscured) {
+            true -> RaspSignalState.PRESENT
+            false -> RaspSignalState.ABSENT
+            null -> RaspSignalState.UNDECIDED
         }
         return listOf(
             RaspContributingSignal(
@@ -72,7 +74,7 @@ public object RaspOtpInterceptionProbes {
             ),
             RaspContributingSignal(
                 "overlay", hard = false, state = overlayState,
-                detail = if (overlayState == RaspSignalState.UNDECIDED) "no screen guard attached" else null,
+                detail = if (overlayState == RaspSignalState.UNDECIDED) "no touch seen by the screen guard yet" else null,
             ),
             RaspContributingSignal(
                 "remote_control_app", hard = false,
@@ -86,7 +88,12 @@ public object RaspOtpInterceptionProbes {
         )
     }
 
-    public fun evaluate(o: Observation): RaspCheckResult = RaspSignalCombiner.combine(DETECTOR_ID, signals(o))
+    public fun evaluate(o: Observation): RaspCheckResult = RaspSignalCombiner.combine(
+        DETECTOR_ID, signals(o),
+        extraEvidence = listOfNotNull(
+            o.overlayPermissionHolder?.let { RaspEvidence("overlay_permission_holder", it, "context only; does not decide") },
+        ),
+    )
 
     public fun observe(
         context: Context,

@@ -66,3 +66,24 @@ can remove it with `tools:node="remove"`. Apps without a launcher icon stay
 invisible unless the host declares them as `<package>` entries. The SDK does
 not use `QUERY_ALL_PACKAGES`. Both detectors report the scope as
 `visibility` evidence. Details: [PACKAGE_VISIBILITY.md](PACKAGE_VISIBILITY.md).
+
+## Task 8.1 fraud signals
+
+All five are off by default and need no new permission. They never read
+SMS content, contacts, phone numbers, IMEI or account names, and the SDK
+does not request READ_SMS, RECEIVE_SMS or QUERY_ALL_PACKAGES. They are risk
+signals, not proof of fraud. Design, privacy, the session risk score and the
+transaction API: `docs/FRAUD_RISK_DESIGN.md` in the workspace root.
+
+| Detector id | Backend severity | Dashboard title / category | Config flag (+ options) | DETECTED when | UNKNOWN when |
+|---|---|---|---|---|---|
+| `otp_interception_risk` | high | OTP Interception Risk / Privacy & Screen | `otpInterceptionDetection` (+ `notificationListenerAllowlist`) | 1 hard signal (accessibility abuse; a visible non-system, non-allowlisted notification listener) or 2 soft signals (overlay; remote-control app). Evidence names each `contributing_signal` | an undecided input could still reach the threshold (listeners or services unreadable, a listener package not visible) |
+| `sms_reader_abuse` | high | SMS Reader Apps / Privacy & Screen | `smsReaderAbuseDetection` (+ `smsAppAllowlist`) | a visible non-system app (not the default SMS app, not allowlisted) holds a granted SMS permission or notification-listener access | nothing found but package visibility is limited (Android 11+ without QUERY_ALL_PACKAGES), packages or listeners unreadable |
+| `otp_forwarding_risk` | medium | OTP Forwarding Risk (hint) / Privacy & Screen | `otpForwardingDetection` (+ `autoForwardPackages`) | a known SMS auto-forward app, a non-allowlisted accessibility service that can perform gestures, or a remote-control app. Always `risk_hint = true`; call forwarding is `not_checked` | one of the three inputs unreadable |
+| `remote_control_app` | high | Remote Control App / Privacy & Screen | `remoteControlAppDetection` (+ `remoteControlListJson`, `remoteControlListPublicKey`) | a built-in or signed-list remote-control package is installed, or a cast/external display or (Android 15+) a screen recording is active | package check failed, configured list rejected (signature), displays unreadable |
+| `screen_sharing_risk` | high | Screen Sharing During App Use / Privacy & Screen | `screenSharingDetection` | the app is in the foreground and its screen is recorded (Android 15+) or a cast/external display is attached | foreground state unreadable, or screen capture not observable (below Android 15, or no DETECT_SCREEN_RECORDING) with no display attached |
+
+The built-in package lists (`RaspRemoteControlProbes.builtInPackages`,
+`RaspOtpForwardingProbes.builtInAutoForwardPackages`) are a starting point
+and are declared in the engine `<queries>`; extend them with the signed list
+or config (and declare extra packages in the host manifest).
