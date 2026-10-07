@@ -131,11 +131,27 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.shieldsdk.rasp"
                 artifactId = "android-core"
-                // The actual version consumers use is the Git tag, via the
-                // com.github.<owner>:<repo>:<tag> coordinate — JitPack maps
-                // the requested tag onto whatever this builds regardless of
-                // the literal string here.
+                // Release builds pass the tag without its "v":
+                // -PraspEngineVersion=1.1.0 (see .github/workflows/release.yml
+                // and docs/PUBLISHING.md).
                 version = project.version.toString()
+            }
+        }
+        repositories {
+            // GitHub Packages, used by the release workflow only: it exists
+            // only when GITHUB_REPOSITORY and GITHUB_TOKEN are set (Actions
+            // sets both; the token is the built-in GITHUB_TOKEN).
+            val githubRepository = System.getenv("GITHUB_REPOSITORY")
+            val githubToken = System.getenv("GITHUB_TOKEN")
+            if (!githubRepository.isNullOrBlank() && !githubToken.isNullOrBlank()) {
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/${githubRepository.lowercase()}")
+                    credentials {
+                        username = System.getenv("GITHUB_ACTOR")
+                        password = githubToken
+                    }
+                }
             }
         }
     }
@@ -144,22 +160,75 @@ afterEvaluate {
 // ── Native core (Task 9.0): Rust crate in native/, built with cargo-ndk ────
 //
 // Needs cargo (rustup) with the targets aarch64-linux-android,
-// armv7-linux-androideabi, x86_64-linux-android, and cargo-ndk
-// (`cargo install cargo-ndk`). The NDK is the one pinned above.
+// armv7-linux-androideabi, x86_64-linux-android, cargo-ndk, and the NDK
+// pinned above. checkNativeToolchain stops the build with install steps
+// when one is missing (docs/PUBLISHING.md).
 val rustAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+val rustTargets = listOf("aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android")
 val rustJniLibsDir = layout.buildDirectory.dir("rustJniLibs")
 val nativeHashesDir = layout.buildDirectory.dir("generated/raspNativeHashes/kotlin")
+val pinnedNdkVersion = android.ndkVersion
+
+/** Output of a command, or `null` when it cannot be started or exits non-zero. */
+fun commandOutput(vararg command: String): String? = try {
+    val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+    val text = process.inputStream.bufferedReader().readText()
+    if (process.waitFor() == 0) text else null
+} catch (e: Exception) {
+    null
+}
+
+/** The pinned NDK's directory, or `null` when it is not installed. */
+fun installedNdkDirectory(): File? = try {
+    android.ndkDirectory.takeIf { File(it, "source.properties").isFile }
+} catch (e: Exception) {
+    null
+}
+
+val checkNativeToolchain = tasks.register("checkNativeToolchain") {
+    group = "build"
+    description = "Fails with install instructions when Rust, the Android targets, cargo-ndk or the NDK is missing."
+    doLast {
+        val problems = mutableListOf<String>()
+        val installedTargets = commandOutput("rustup", "target", "list", "--installed")
+        if (commandOutput("cargo", "--version") == null || installedTargets == null) {
+            problems += "Rust is not installed (cargo / rustup not on PATH). Install rustup from https://rustup.rs, open a new terminal, then run:\n" +
+                "      rustup target add ${rustTargets.joinToString(" ")}\n" +
+                "      cargo install cargo-ndk --version 4.1.2 --locked"
+        } else {
+            val missing = rustTargets.filter { it !in installedTargets.lines().map(String::trim) }
+            if (missing.isNotEmpty()) problems += "Missing Rust targets: ${missing.joinToString()}. Run: rustup target add ${rustTargets.joinToString(" ")}"
+            if (commandOutput("cargo", "ndk", "--version") == null) {
+                problems += "cargo-ndk is not installed. Run: cargo install cargo-ndk --version 4.1.2 --locked"
+            }
+        }
+        if (installedNdkDirectory() == null) {
+            problems += "Android NDK $pinnedNdkVersion is not installed. Run: sdkmanager --install \"ndk;$pinnedNdkVersion\" (or Android Studio > SDK Manager > SDK Tools > NDK (Side by side), version $pinnedNdkVersion)"
+        }
+        if (problems.isNotEmpty()) {
+            throw GradleException(
+                "The engine includes a Rust native library (native/) and cannot be built without its toolchain:\n" +
+                    problems.joinToString("\n") { "  - $it" } +
+                    "\nSee docs/PUBLISHING.md, section \"Build locally\".",
+            )
+        }
+    }
+}
 
 val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     group = "build"
     description = "Builds libraspshield.so for ${rustAbis.joinToString()} with cargo-ndk (release profile)."
+    dependsOn(checkNativeToolchain)
     workingDir = file("native")
     inputs.dir("native/src")
     inputs.files("native/Cargo.toml", "native/Cargo.lock", "native/.cargo/config.toml")
     outputs.dir(rustJniLibsDir)
-    val ndkDir = android.ndkDirectory
     val outDir = rustJniLibsDir.get().asFile
-    environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+    doFirst {
+        // Resolved here, not while configuring, so a missing NDK is reported
+        // by checkNativeToolchain instead of failing every Gradle command.
+        environment("ANDROID_NDK_HOME", installedNdkDirectory()!!.absolutePath)
+    }
     commandLine(
         listOf("cargo", "ndk") + rustAbis.flatMap { listOf("-t", it) } +
             listOf("--platform", "23", "-o", outDir.absolutePath, "build", "--release", "--locked"),
