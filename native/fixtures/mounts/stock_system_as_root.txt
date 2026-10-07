@@ -1,0 +1,5 @@
+/dev/block/dm-5 / ext4 ro,seclabel,relatime 0 0
+tmpfs /dev tmpfs rw,seclabel,nosuid,relatime,mode=755 0 0
+/dev/block/dm-6 /vendor ext4 ro,seclabel,relatime 0 0
+/dev/block/dm-7 /product ext4 ro,seclabel,relatime 0 0
+/dev/block/by-name/userdata /data f2fs rw,lazytime,seclabel,nosuid,nodev,noatime 0 0

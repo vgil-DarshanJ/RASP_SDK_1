@@ -1,0 +1,14 @@
+# Android link flags for libraspshield.so (cargo-ndk sets the linker).
+# - max-page-size=16384: 16 KB page alignment of every LOAD segment, so the
+#   library loads on Android 15+ devices with 16 KB pages;
+# - relro + now: read-only relocations, bound at load time.
+# Symbol visibility: a Rust cdylib exports only #[no_mangle] items, and the
+# only one here is JNI_OnLoad (methods are registered with RegisterNatives).
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-Wl,-z,relro", "-C", "link-arg=-Wl,-z,now"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-Wl,-z,relro", "-C", "link-arg=-Wl,-z,now"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-Wl,-z,relro", "-C", "link-arg=-Wl,-z,now"]

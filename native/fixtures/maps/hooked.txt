@@ -1,0 +1,6 @@
+7a1c25e000-7a1c2f9000 r-xp 0005e000 fd:06 2211                           /apex/com.android.runtime/lib64/bionic/libc.so
+7b00000000-7b00100000 r-xp 00000000 fd:21 9001                           /data/adb/lspd/libriru_lspd.so
+7b00200000-7b00300000 r--p 00000000 fd:21 9002                           /system/framework/XposedBridge.jar
+7b00400000-7b00500000 r-xp 00000000 fd:21 9003                           /data/app/~~a==/com.example.bank-b==/lib/arm64/libdobby.so
+7b00600000-7b00700000 r--p 00000000 fd:21 9004                           /data/app/~~c==/com.epicenter.news-d==/base.apk
+7b00800000-7b00900000 r-xp 00000000 fd:21 9005                           /data/local/tmp/frida-like/libinject.so

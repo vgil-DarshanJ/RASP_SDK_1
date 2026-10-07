@@ -1,0 +1,8 @@
+12c00000-12d00000 rw-p 00000000 00:00 0                                  [anon:dalvik-main space (region space)]
+6f4a0000-6f4a8000 r--p 00000000 fd:00 1234                               /system/framework/arm64/boot.art
+7a1c200000-7a1c25e000 r--p 00000000 fd:06 2211                           /apex/com.android.runtime/lib64/bionic/libc.so
+7a1c25e000-7a1c2f9000 r-xp 0005e000 fd:06 2211                           /apex/com.android.runtime/lib64/bionic/libc.so
+7a1c400000-7a1c480000 r-xp 00000000 fd:21 5512                           /data/misc/apexdata/com.android.art/dalvik-cache/arm64/boot.oat
+7a20000000-7a20010000 rw-p 00000000 00:00 0                              [anon:libc_malloc]
+7a21000000-7a21100000 rwxp 00000000 00:00 0                              [anon:dalvik-jit-code-cache]
+7ffc0000-7ffe0000 rw-p 00000000 00:00 0                                  [stack]

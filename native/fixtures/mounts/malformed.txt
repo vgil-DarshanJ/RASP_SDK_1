@@ -1,0 +1,5 @@
+only three fields
+/dev/x / ext4
+
+ /dev/y   /product   ext4   ro , rw  
+,,,, , , ,

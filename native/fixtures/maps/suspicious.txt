@@ -1,0 +1,7 @@
+7c00000000-7c00100000 r-xp 00000000 fd:21 1                              /data/local/tmp/payload.so
+7c00100000-7c00200000 r-xp 00000000 fd:21 1                              /data/local/tmp/payload.so
+7c00200000-7c00300000 r--p 00000000 fd:21 2                              /sdcard/Download/notes.txt
+7c00300000-7c00400000 r-xp 00000000 fd:21 3                              /storage/emulated/0/x/lib.so
+7c00400000-7c00500000 r-xp 00000000 fd:21 4                              /data/misc/apexdata/com.android.art/dalvik-cache/arm64/boot-framework.oat
+7c00500000-7c00600000 r-xp 00000000 fd:21 5                              /data/misc/apexdata/com.android.art/dalvik-cache/../../../data/local/tmp/evil.so
+7c00600000-7c00700000 R-XP 00000000 fd:21 6                              /CACHE/UPPER.SO

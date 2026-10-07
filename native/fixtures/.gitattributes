@@ -1,0 +1,2 @@
+# Parity fixtures are compared byte for byte (some use CR / CRLF on purpose).
+* -text
