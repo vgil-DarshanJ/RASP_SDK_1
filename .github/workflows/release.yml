@@ -1,0 +1,94 @@
+# Release of the android-core engine (AAR with the Rust native library).
+#
+# Runs on a version tag (v1.2.3). Builds and tests the Rust crate and the
+# engine, then publishes the AAR:
+#   - to GitHub Packages (Maven): com.shieldsdk.rasp:android-core:1.2.3
+#   - as an asset of the GitHub Release for the tag (AAR + SHA-256 file).
+# Uses only the built-in GITHUB_TOKEN. Versions are pinned: actions by
+# commit SHA, the Rust toolchain, cargo-ndk, the NDK (same as
+# build.gradle.kts) and the runner image. See docs/PUBLISHING.md.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # publish to GitHub Packages
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: "1.99.0"
+  CARGO_NDK_VERSION: "4.1.2"
+  ANDROID_NDK_VERSION: "27.1.12297006"
+  JAVA_VERSION: "17"
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "Releasing android-core $version"
+
+      - name: Rust toolchain and Android targets
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+          cargo --version
+
+      - name: cargo-ndk
+        run: |
+          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          cargo ndk --version
+
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" > /dev/null
+          test -f "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION/source.properties"
+
+      - name: Rust tests and clippy
+        working-directory: native
+        run: |
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --target aarch64-linux-android -- -D warnings
+
+      - name: Engine tests and release AAR
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleRelease "-PraspEngineVersion=$VERSION"
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew --no-daemon publishReleasePublicationToGitHubPackagesRepository "-PraspEngineVersion=$VERSION"
+
+      - name: GitHub Release with the AAR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          aar="android-core-$VERSION.aar"
+          cp build/outputs/aar/android-core-release.aar "$aar"
+          sha256sum "$aar" > "$aar.sha256"
+          gh release create "$GITHUB_REF_NAME" "$aar" "$aar.sha256" \
+            --verify-tag \
+            --title "android-core $VERSION" \
+            --notes "Maven: com.shieldsdk.rasp:android-core:$VERSION (GitHub Packages). The AAR contains libraspshield.so for arm64-v8a, armeabi-v7a and x86_64. See docs/PUBLISHING.md."

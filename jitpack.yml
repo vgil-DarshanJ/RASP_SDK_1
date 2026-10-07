@@ -1,2 +1,18 @@
+# JitPack build — BEST EFFORT, NOT VERIFIED.
+#
+# The engine now contains a Rust native library, so a JitPack build needs
+# rustup, three Android targets, cargo-ndk and the Android NDK (about 1 GB)
+# inside JitPack's build container. This file installs them, but whether
+# JitPack's image allows it within its build time limit has not been
+# tested. The supported, primary distribution is GitHub Packages and the
+# GitHub Release asset built by .github/workflows/release.yml
+# (coordinate com.shieldsdk.rasp:android-core:<version>); see
+# docs/PUBLISHING.md. If a JitPack build fails, use those.
 jdk:
   - openjdk17
+before_install:
+  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.0 --target aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+  - $HOME/.cargo/bin/cargo install cargo-ndk --version 4.1.2 --locked
+  - yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.1.12297006" > /dev/null || yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
+install:
+  - PATH="$HOME/.cargo/bin:$PATH" ./gradlew --no-daemon publishToMavenLocal "-PraspEngineVersion=$VERSION"
