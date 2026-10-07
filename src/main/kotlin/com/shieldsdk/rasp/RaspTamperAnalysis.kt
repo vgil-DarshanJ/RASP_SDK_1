@@ -83,7 +83,7 @@ object RaspTamperAnalysis {
         checks["signing_certificate"] = when {
             e.signingCertSha256 == null -> Check.NOT_CONFIGURED
             o.signingCertSha256 == null -> Check.UNREADABLE
-            o.signingCertSha256 == e.signingCertSha256 -> Check.MATCH
+            hashesEqual(o.signingCertSha256, e.signingCertSha256) -> Check.MATCH
             else -> Check.MISMATCH
         }
         checks["installer"] = when {
@@ -131,7 +131,7 @@ object RaspTamperAnalysis {
     private fun hashCheck(expected: String?, observed: String?, readable: Boolean): Check = when {
         expected == null -> Check.NOT_CONFIGURED
         !readable || observed == null -> Check.UNREADABLE
-        observed == expected -> Check.MATCH
+        hashesEqual(observed, expected) -> Check.MATCH
         else -> Check.MISMATCH
     }
 
@@ -199,6 +199,13 @@ object RaspTamperAnalysis {
      */
     fun dexSha256(entries: List<Pair<String, ByteArray>>): String? {
         if (entries.isEmpty()) return null
+        RaspNative.dexSha256(entries)?.let { return it }
+        return kotlinDexSha256(entries)
+    }
+
+    /** The Kotlin [dexSha256] (reference for the native core and its fallback). */
+    fun kotlinDexSha256(entries: List<Pair<String, ByteArray>>): String? {
+        if (entries.isEmpty()) return null
         val md = MessageDigest.getInstance("SHA-256")
         entries.sortedBy { dexIndex(it.first) }.forEach { (name, bytes) ->
             md.update(name.toByteArray(Charsets.UTF_8))
@@ -208,6 +215,18 @@ object RaspTamperAnalysis {
         return md.digest().joinToString("") { "%02X".format(it) }
     }
 
-    fun sha256Hex(bytes: ByteArray): String =
+    fun sha256Hex(bytes: ByteArray): String = RaspNative.sha256Hex(bytes) ?: kotlinSha256Hex(bytes)
+
+    /** The Kotlin [sha256Hex] (reference for the native core and its fallback). */
+    fun kotlinSha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02X".format(it) }
+
+    /**
+     * Hash strings compared in constant time for equal lengths (native core,
+     * or `MessageDigest.isEqual`); `null` on either side is unequal.
+     */
+    fun hashesEqual(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return false
+        return RaspNative.hashEquals(a, b) ?: MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
+    }
 }

@@ -86,10 +86,16 @@ public object RaspCertificatePinProbes {
     // android.util.Base64 (a stub in JVM unit tests, which would make every
     // pin look malformed there).
     @JvmStatic
-    fun spkiPin(certificate: X509Certificate): String =
-        "sha256/" + RaspBase64.encode(
-            MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
-        )
+    fun spkiPin(certificate: X509Certificate): String = spkiPinOf(certificate.publicKey.encoded)
+
+    /** [spkiPin] of a DER SubjectPublicKeyInfo: native core when loaded, else Kotlin. */
+    @JvmStatic
+    fun spkiPinOf(spkiDer: ByteArray): String = RaspNative.spkiPin(spkiDer) ?: kotlinSpkiPin(spkiDer)
+
+    /** The Kotlin pin (reference for the native core and its fallback). */
+    @JvmStatic
+    fun kotlinSpkiPin(spkiDer: ByteArray): String =
+        "sha256/" + RaspBase64.encode(MessageDigest.getInstance("SHA-256").digest(spkiDer))
 
     /** `sha256/` + Base64 of exactly 32 bytes (a SHA-256 digest); anything else is invalid. */
     @JvmStatic

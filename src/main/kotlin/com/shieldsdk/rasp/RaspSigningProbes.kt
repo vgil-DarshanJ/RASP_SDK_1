@@ -3,7 +3,6 @@ package com.shieldsdk.rasp
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import java.security.MessageDigest
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 
@@ -48,8 +47,7 @@ public object RaspSigningProbes {
         }
 
         val first = signatures?.firstOrNull() ?: return ""
-        val digest = MessageDigest.getInstance("SHA-256").digest(first.toByteArray())
-        digest.joinToString("") { "%02X".format(it) }
+        RaspTamperAnalysis.sha256Hex(first.toByteArray())
     } catch (e: Exception) {
         ""
     }
@@ -85,7 +83,7 @@ public object RaspSigningProbes {
     fun signatureMismatches(context: Context, expectedFingerprintSha256Hex: String): Boolean? {
         val actual = signingCertSha256(context)
         if (actual.isEmpty()) return null
-        return actual != expectedFingerprintSha256Hex
+        return !RaspTamperAnalysis.hashesEqual(actual, expectedFingerprintSha256Hex)
     }
 
     /**

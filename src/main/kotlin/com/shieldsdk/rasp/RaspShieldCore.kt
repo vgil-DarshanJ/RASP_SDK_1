@@ -122,6 +122,24 @@ object RaspShieldCore {
         }
     }
 
+    /**
+     * For the checks ported to the native core (hook maps, root files and
+     * mounts, hashing): loads the verified library once, runs [block] (which
+     * uses the native core when loaded, Kotlin otherwise) and, when the native
+     * core is not in use, adds `native_core_unavailable` evidence with the
+     * reason. The verdict itself always comes from the same rules.
+     */
+    private inline fun nativeBacked(context: Context, block: () -> RaspCheckResult): RaspCheckResult {
+        try {
+            RaspNative.ensureLoaded(context)
+        } catch (e: Throwable) {
+            // ensureLoaded does not throw; the Kotlin path runs regardless.
+        }
+        val result = block()
+        val extra = RaspNative.unavailableEvidence()
+        return if (extra.isEmpty()) result else result.copy(evidence = result.evidence + extra)
+    }
+
     /** [logger] itself must never be allowed to crash a detector. */
     private fun notifyLogger(detectorId: String, throwable: Throwable) {
         try {
@@ -150,7 +168,7 @@ object RaspShieldCore {
 
     // ── Root ───────────────────────────────────────────────────────────
 
-    fun checkRootBlocking(context: Context): RaspCheckResult = runGuarded("root_jailbreak") {
+    fun checkRootBlocking(context: Context): RaspCheckResult = runGuarded("root_jailbreak") { nativeBacked(context) {
         val probes = RaspDeviceIntegrityProbes(context)
         val (signals, verdict) = probes.rootAssessment()
         val posture = probes.posturesSignals()
@@ -162,7 +180,7 @@ object RaspShieldCore {
             RaspRootAnalysis.RootVerdict.CLEAN -> RaspCheckResult.secure("root_jailbreak", evidence)
             RaspRootAnalysis.RootVerdict.UNAVAILABLE -> RaspCheckResult.unavailable("root_jailbreak", "Root mount-table probe unavailable")
         }
-    }
+    } }
 
     fun checkRootAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
         runAsync(context, callback, ::checkRootBlocking)
@@ -393,7 +411,7 @@ object RaspShieldCore {
     // ── Hooking / method interception ─────────────────────────────────
 
     fun checkHookingBlocking(context: Context): RaspCheckResult = runGuarded("hook_detection") {
-        RaspHookAnalysis.toCheckResult(RaspHookProbes(context).observe())
+        nativeBacked(context) { RaspHookAnalysis.toCheckResult(RaspHookProbes(context).observe()) }
     }
 
     fun checkHookingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -437,7 +455,7 @@ object RaspShieldCore {
             classesDexSha256 = RaspTamperAnalysis.normalizeHex(classesDexSha256),
             resourcesArscSha256 = RaspTamperAnalysis.normalizeHex(resourcesArscSha256),
         )
-        RaspTamperAnalysis.evaluate(RaspTamperAnalysis.observe(context, expected), expected)
+        nativeBacked(context) { RaspTamperAnalysis.evaluate(RaspTamperAnalysis.observe(context, expected), expected) }
     }
 
     fun checkTamperAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -534,8 +552,10 @@ object RaspShieldCore {
                 val configured = pinnedCertificatePins
                 if (host != null && configured != null && configured.isConfigured()) RaspMitmAnalysis.PinConfig(host, configured) else null
             }
-            RaspMitmAnalysis.evaluate(RaspNetworkProbes.mitmProbe(context), pin) {
-                RaspCertificatePinProbes.checkCertificatePinDetailed(it.host, it.pins)
+            nativeBacked(context) {
+                RaspMitmAnalysis.evaluate(RaspNetworkProbes.mitmProbe(context), pin) {
+                    RaspCertificatePinProbes.checkCertificatePinDetailed(it.host, it.pins)
+                }
             }
         }
 

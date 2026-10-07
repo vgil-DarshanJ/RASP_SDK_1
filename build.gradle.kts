@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 // android_core — the single source of truth for every RASP Shield detection
 // class. Published to JitPack from this standalone repo (see jitpack.yml)
 // so the Flutter plugin and the native Android SDK both depend on it as a
@@ -49,28 +51,23 @@ android {
     namespace = "com.shieldsdk.rasp"
     compileSdk = 35
 
-    // Native library (src/main/cpp): pinned NDK and CMake so builds are
-    // reproducible; ABIs per Task 4 (no 32-bit x86).
+    // Native library (native/, Rust, built by cargo-ndk — see the tasks at
+    // the end of this file): pinned NDK; ABIs per Task 4 (no 32-bit x86).
     ndkVersion = "27.1.12297006"
 
     defaultConfig {
         minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
         buildConfigField("String", "RASP_ENGINE_VERSION", "\"${project.version}\"")
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_static")
-            }
-        }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("rustJniLibs"))
+    sourceSets["main"].kotlin.srcDir(layout.buildDirectory.dir("generated/raspNativeHashes/kotlin"))
+
+    packaging {
+        jniLibs {
+            // Already stripped by cargo (profile.release strip = true).
+            keepDebugSymbols += "**/libraspshield.so"
         }
     }
 
@@ -141,5 +138,96 @@ afterEvaluate {
                 version = project.version.toString()
             }
         }
+    }
+}
+
+// ── Native core (Task 9.0): Rust crate in native/, built with cargo-ndk ────
+//
+// Needs cargo (rustup) with the targets aarch64-linux-android,
+// armv7-linux-androideabi, x86_64-linux-android, and cargo-ndk
+// (`cargo install cargo-ndk`). The NDK is the one pinned above.
+val rustAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+val rustJniLibsDir = layout.buildDirectory.dir("rustJniLibs")
+val nativeHashesDir = layout.buildDirectory.dir("generated/raspNativeHashes/kotlin")
+
+val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
+    group = "build"
+    description = "Builds libraspshield.so for ${rustAbis.joinToString()} with cargo-ndk (release profile)."
+    workingDir = file("native")
+    inputs.dir("native/src")
+    inputs.files("native/Cargo.toml", "native/Cargo.lock", "native/.cargo/config.toml")
+    outputs.dir(rustJniLibsDir)
+    val ndkDir = android.ndkDirectory
+    val outDir = rustJniLibsDir.get().asFile
+    environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+    commandLine(
+        listOf("cargo", "ndk") + rustAbis.flatMap { listOf("-t", it) } +
+            listOf("--platform", "23", "-o", outDir.absolutePath, "build", "--release", "--locked"),
+    )
+}
+
+/**
+ * The integrity hash RaspNative checks before loading (same algorithm as
+ * RaspNativeIntegrity.loadSegmentsSha256): SHA-256 over every PT_LOAD
+ * segment's file bytes, with the ELF header's section-table fields zeroed,
+ * so an app build that strips the library again does not change it.
+ */
+fun loadSegmentsSha256(file: File): String {
+    val data = file.readBytes()
+    require(data.size >= 0x40 && data[0] == 0x7f.toByte() && data[5] == 1.toByte()) { "not a little-endian ELF: $file" }
+    val is64 = data[4].toInt() == 2
+    val fields = if (is64) listOf(0x28 to 8, 0x3A to 2, 0x3C to 2, 0x3E to 2) else listOf(0x20 to 4, 0x2E to 2, 0x30 to 2, 0x32 to 2)
+    fields.forEach { (offset, length) -> data.fill(0.toByte(), offset, offset + length) }
+    fun le(at: Int, n: Int): Long = (0 until n).fold(0L) { acc, i -> acc or ((data[at + i].toLong() and 0xff) shl (8 * i)) }
+    val phoff = (if (is64) le(0x20, 8) else le(0x1C, 4)).toInt()
+    val phentsize = le(if (is64) 0x36 else 0x2A, 2).toInt()
+    val phnum = le(if (is64) 0x38 else 0x2C, 2).toInt()
+    val md = MessageDigest.getInstance("SHA-256")
+    for (i in 0 until phnum) {
+        val base = phoff + i * phentsize
+        if (le(base, 4) != 1L) continue
+        val offset = (if (is64) le(base + 8, 8) else le(base + 4, 4)).toInt()
+        val size = (if (is64) le(base + 32, 8) else le(base + 16, 4)).toInt()
+        md.update(data, offset, size)
+    }
+    return md.digest().joinToString("") { "%02X".format(it) }
+}
+
+val generateRaspNativeHashes = tasks.register("generateRaspNativeHashes") {
+    group = "build"
+    description = "Writes the expected integrity hash of each libraspshield.so into RaspNativeHashes.kt."
+    dependsOn(cargoNdkBuild)
+    val libsDir = rustJniLibsDir
+    val outDir = nativeHashesDir
+    inputs.dir(libsDir)
+    outputs.dir(outDir)
+    doLast {
+        val entries = rustAbis.map { abi ->
+            val so = libsDir.get().file("$abi/libraspshield.so").asFile
+            check(so.isFile) { "missing $so — did cargoNdkBuild run?" }
+            "        \"$abi\" to \"${loadSegmentsSha256(so)}\","
+        }
+        val target = outDir.get().file("com/shieldsdk/rasp/RaspNativeHashes.kt").asFile
+        target.parentFile.mkdirs()
+        target.writeText(
+            """
+            |// Generated by the generateRaspNativeHashes Gradle task - do not edit.
+            |package com.shieldsdk.rasp
+            |
+            |/** Expected RaspNativeIntegrity.loadSegmentsSha256 of libraspshield.so per ABI, from this build. */
+            |internal object RaspNativeHashes {
+            |    val EXPECTED: Map<String, String> = mapOf(
+            |${entries.joinToString("\n")}
+            |    )
+            |}
+            |""".trimMargin(),
+        )
+    }
+}
+
+tasks.named("preBuild") { dependsOn(cargoNdkBuild, generateRaspNativeHashes) }
+tasks.configureEach {
+    if (name.endsWith("SourcesJar") || name.startsWith("sourceRelease") || name.startsWith("sourceDebug")) {
+        dependsOn(generateRaspNativeHashes)
     }
 }
