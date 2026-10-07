@@ -119,6 +119,11 @@ public data class RaspLeanConfig(
     val highRiskTransactionMode: Boolean = false,
     /** Salt (hex) for account/session/beneficiary hashes when the credential has no `account_hash_salt`. */
     val accountHashSalt: String? = null,
+    /**
+     * Location heartbeat interval while the user shares location (Task 9.3);
+     * at least 30 000. Heartbeats are sent only with a shared location.
+     */
+    val locationHeartbeatIntervalMillis: Long = RaspLocationHeartbeat.DEFAULT_INTERVAL_MILLIS,
 )
 
 public data class RaspLeanState(
@@ -128,6 +133,8 @@ public data class RaspLeanState(
     val clipboardChangeCount: Int = 0, val extendedDetectors: Map<String, RaspCheckResult> = emptyMap(),
     /** Session risk (Task 8.1); `null` unless `sessionRiskScoring` is on. */
     val risk: RaspRiskAssessment? = null,
+    /** Delivery result of the last location heartbeat; `null` when none was sent. */
+    val locationHeartbeat: RaspLocationHeartbeatStatus? = null,
 ) { public companion object { @JvmField val INITIAL = RaspLeanState() } }
 
 public fun interface RaspLeanStateListener { fun onStateChanged(state: RaspLeanState) }
@@ -141,7 +148,36 @@ public class RaspLeanSession private constructor(
     private val appContext: Context, private val config: RaspLeanConfig,
     private val activityProvider: (() -> Activity?)?, private val screenGuard: RaspScreenGuard?,
 ) {
-    @Volatile public var currentLocation: RaspLocationSnapshot? = null
+    @Volatile private var location: RaspLocationSnapshot? = null
+
+    /**
+     * The host-supplied location. Setting it also checks the location
+     * heartbeat at once (first fix → sent now); `null` stops heartbeats and
+     * sends one "cleared" message if a location was being shared.
+     */
+    public var currentLocation: RaspLocationSnapshot?
+        get() = location
+        set(value) {
+            location = value
+            if (disposed.get()) return
+            try {
+                scheduler.execute(::locationHeartbeatTick)
+            } catch (e: java.util.concurrent.RejectedExecutionException) {
+                // disposed meanwhile
+            }
+        }
+
+    private val heartbeat by lazy { RaspLocationHeartbeat(config.locationHeartbeatIntervalMillis) }
+
+    /** Sends a location heartbeat when one is due (see [RaspLocationHeartbeat]). */
+    private fun locationHeartbeatTick() {
+        if (disposed.get()) return
+        when (val action = heartbeat.next(location, System.currentTimeMillis())) {
+            is RaspLocationHeartbeat.Action.Send -> RaspEventShipper.sendLocationHeartbeat(appContext, action.result, cleared = false)
+            is RaspLocationHeartbeat.Action.Clear -> RaspEventShipper.sendLocationHeartbeat(appContext, action.result, cleared = true)
+            null -> Unit
+        }
+    }
     @Volatile public var current: RaspLeanState = RaspLeanState.INITIAL; private set
     @Volatile private var listener: RaspLeanStateListener? = null
     private val disposed = AtomicBoolean(false)
@@ -234,9 +270,12 @@ public class RaspLeanSession private constructor(
             }
             current = RaspLeanState(active, usbConnected, usbCount, adb,
                 if (config.usbDetection || config.adbDetection) AdbGuard.isDeveloperModeEnabled(appContext) else null,
-                clipActive, clipCount, extended, if (config.sessionRiskScoring) risk else null)
+                clipActive, clipCount, extended, if (config.sessionRiskScoring) risk else null,
+                RaspEventShipper.lastLocationHeartbeat())
             runCatching { listener?.onStateChanged(current) }
             ship(controlResults(active, usbConnected, usbCount, adb, clipActive, clipCount) + extended.values)
+            // Independent of detector results, which ship only when they change.
+            locationHeartbeatTick()
         }
     }
 
