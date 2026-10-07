@@ -158,6 +158,7 @@ public object RaspEventShipper {
 
     public fun resetForTests() {
         credential = null
+        lastLocationHeartbeat = null
         deviceKey = null
         offlineQueue?.stopFlusher()
         offlineQueue = null
@@ -338,12 +339,12 @@ public object RaspEventShipper {
         )
     }
 
-    /** Legacy HMAC batch post — unchanged from original implementation. */
+    /** Legacy HMAC batch post. Returns the HTTP status (throws when no answer). */
     private fun postBatch(
         credential: RaspEventCredential,
         batch: List<RaspCheckResult>,
         device: DeviceInfo,
-    ) {
+    ): Int {
         val eventsArray = JSONArray()
         for (result in batch) {
             val evidenceArray = JSONArray()
@@ -393,8 +394,52 @@ public object RaspEventShipper {
             if (code !in 200..299) {
                 notifyLoggerOnly("event_shipper", "Ingestion endpoint returned HTTP $code")
             }
+            return code
         } finally {
             connection?.disconnect()
+        }
+    }
+
+    // ── Location heartbeat (Task 9.3) ─────────────────────────────────
+
+    @Volatile
+    private var lastLocationHeartbeat: RaspLocationHeartbeatStatus? = null
+
+    /** Delivery result of the last location heartbeat this process sent, or `null`. */
+    public fun lastLocationHeartbeat(): RaspLocationHeartbeatStatus? = lastLocationHeartbeat
+
+    /**
+     * Sends one location heartbeat (see [RaspLocationHeartbeat]) right away,
+     * not through the offline queue — a location is only useful while fresh.
+     * Envelope mode: a device-key signed envelope with only this result;
+     * legacy mode: an HMAC batch with only this event. The outcome is kept
+     * for [lastLocationHeartbeat].
+     */
+    internal fun sendLocationHeartbeat(context: Context, result: RaspCheckResult, cleared: Boolean) {
+        val appContext = context.applicationContext ?: context
+        val cred = credential
+        if (cred == null) {
+            lastLocationHeartbeat = RaspLocationHeartbeatStatus(
+                System.currentTimeMillis(), RaspLocationHeartbeatStatus.Outcome.NOT_CONFIGURED, "no backend credential", cleared,
+            )
+            return
+        }
+        executor.execute {
+            val now = System.currentTimeMillis()
+            lastLocationHeartbeat = try {
+                if (useEvidenceEnvelope) {
+                    val envelope = envelopeBuilder(appContext).build(listOf(result))
+                    if (envelope == null) {
+                        RaspLocationHeartbeatStatus(now, RaspLocationHeartbeatStatus.Outcome.NOT_DELIVERED, "device key or counter unavailable", cleared)
+                    } else {
+                        RaspLocationHeartbeatStatus.fromDelivery(delivery(appContext).deliver(envelope), now, cleared)
+                    }
+                } else {
+                    RaspLocationHeartbeatStatus.fromHttpStatus(postBatch(cred, listOf(result), collectDeviceInfo(appContext)), now, cleared)
+                }
+            } catch (e: Exception) {
+                RaspLocationHeartbeatStatus.fromHttpStatus(-1, now, cleared)
+            }
         }
     }
 }
