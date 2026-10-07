@@ -1,0 +1,1 @@
+{"dartCodeRwxCount":0,"frameworkLines":[],"frameworks":[],"rwxLines":[],"rwxMappingCount":0,"suspiciousExecMappingCount":4,"suspiciousLines":["7c00000000-7c00100000 r-xp 00000000 fd:21 1 /data/local/tmp/payload.so","7c00100000-7c00200000 r-xp 00000000 fd:21 1 /data/local/tmp/payload.so","7c00300000-7c00400000 r-xp 00000000 fd:21 3 /storage/emulated/0/x/lib.so"]}

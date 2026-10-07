@@ -1,0 +1,4 @@
+/dev/block/dm-5 / ext4 ro,seclabel,relatime 0 0
+/dev/block/dm-8 /system ext4 ro,errors=remount-ro 0 0
+/dev/block/dm-8 /system ext4 rw,seclabel 0 0
+/dev/block/dm-6 /vendor ext4 rw,seclabel,relatime 0 0

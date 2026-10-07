@@ -1,0 +1,4 @@
+/dev/block/dm-5 / ext4 ro,seclabel,relatime 0 0
+magisk /system/bin tmpfs ro,seclabel,relatime,size=1882032k 0 0
+tmpfs /debug_ramdisk tmpfs rw 0 0
+/dev/block/by-name/userdata /data/adb/modules ext4 rw 0 0

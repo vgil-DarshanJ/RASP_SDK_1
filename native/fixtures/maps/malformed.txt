@@ -1,0 +1,9 @@
+x
+
+[
+/
+7f r
+  rwxp
+r-xp /data/local/tmp/
+7f-7f rw 0 0 0 /tmp/a
+…/…[

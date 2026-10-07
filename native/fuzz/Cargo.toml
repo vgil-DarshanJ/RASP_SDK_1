@@ -1,0 +1,36 @@
+# cargo-fuzz harness (libFuzzer). Needs a nightly toolchain and cargo-fuzz:
+#   rustup toolchain install nightly
+#   cargo install cargo-fuzz
+#   cd native && cargo +nightly fuzz run maps_parser -- -max_total_time=600
+#   cd native && cargo +nightly fuzz run mounts_parser -- -max_total_time=600
+# Linux or macOS host (libFuzzer does not support the Windows MSVC target well).
+[package]
+name = "raspshield-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+raspshield = { path = ".." }
+
+[[bin]]
+name = "maps_parser"
+path = "fuzz_targets/maps_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mounts_parser"
+path = "fuzz_targets/mounts_parser.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace, so it is never part of the Android build.
+[workspace]
+members = ["."]
