@@ -273,7 +273,7 @@ public class RaspLeanSession private constructor(
                 clipActive, clipCount, extended, if (config.sessionRiskScoring) risk else null,
                 RaspEventShipper.lastLocationHeartbeat())
             runCatching { listener?.onStateChanged(current) }
-            ship(controlResults(active, usbConnected, usbCount, adb, clipActive, clipCount) + extended.values)
+            ship(leanControlResults(config, active, usbConnected, usbCount, adb, clipActive, clipCount) + extended.values)
             // Independent of detector results, which ship only when they change.
             locationHeartbeatTick()
         }
@@ -372,13 +372,6 @@ public class RaspLeanSession private constructor(
         else RaspCheckResult.secure("screenshot_event", evidence)
     }
 
-    private fun controlResults(active: Boolean?, usbConnected: Boolean?, count: Int, adb: Boolean?, clip: Boolean?, clipCount: Int): List<RaspCheckResult> = buildList {
-        if (config.screenshotProtection) add(RaspCheckResult("screenshot_protection", if (active == true) RaspCheckStatus.SECURE else RaspCheckStatus.UNAVAILABLE))
-        if (config.usbDetection) add(RaspCheckResult("usb_connection", if (usbConnected == true) RaspCheckStatus.DETECTED else RaspCheckStatus.SECURE, listOf(RaspEvidence("device_count", count))))
-        if (config.adbDetection) add(RaspCheckResult("adb_enabled", if (adb == true) RaspCheckStatus.DETECTED else RaspCheckStatus.SECURE))
-        if (config.clipboardProtection) add(RaspCheckResult("clipboard_protection", if (clip == true) RaspCheckStatus.SECURE else RaspCheckStatus.UNAVAILABLE, listOf(RaspEvidence("change_count", clipCount))))
-    }
-
     private fun ship(results: Collection<RaspCheckResult>) {
         if (!RaspEventShipper.isConfigured()) return
         val now = System.currentTimeMillis()
@@ -410,6 +403,38 @@ public class RaspLeanSession private constructor(
  * baseline, change-detection, and detected-heartbeat contract can be unit
  * tested without a device, network, or Flutter channel.
  */
+/**
+ * Results of the four basic controls. A state that could not be read
+ * (`null`: the setting or the USB service threw or is missing) is UNKNOWN,
+ * never SECURE (F-02).
+ */
+internal fun leanControlResults(
+    config: RaspLeanConfig,
+    active: Boolean?,
+    usbConnected: Boolean?,
+    count: Int,
+    adb: Boolean?,
+    clip: Boolean?,
+    clipCount: Int,
+): List<RaspCheckResult> = buildList {
+    if (config.screenshotProtection) add(RaspCheckResult("screenshot_protection", if (active == true) RaspCheckStatus.SECURE else RaspCheckStatus.UNAVAILABLE))
+    if (config.usbDetection) add(
+        when (usbConnected) {
+            true -> RaspCheckResult.detected("usb_connection", listOf(RaspEvidence("device_count", count)))
+            false -> RaspCheckResult.secure("usb_connection", listOf(RaspEvidence("device_count", count)))
+            null -> RaspCheckResult.unknown("usb_connection", "USB state could not be read")
+        }
+    )
+    if (config.adbDetection) add(
+        when (adb) {
+            true -> RaspCheckResult.detected("adb_enabled")
+            false -> RaspCheckResult.secure("adb_enabled")
+            null -> RaspCheckResult.unknown("adb_enabled", "ADB setting could not be read")
+        }
+    )
+    if (config.clipboardProtection) add(RaspCheckResult("clipboard_protection", if (clip == true) RaspCheckStatus.SECURE else RaspCheckStatus.UNAVAILABLE, listOf(RaspEvidence("change_count", clipCount))))
+}
+
 /**
  * Adds the location to a result about to be shipped — only when the user
  * opted in ([RaspLocationSnapshot.shareWithBackend]). Then every shipped
