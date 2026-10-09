@@ -1,0 +1,35 @@
+# Coverage-guided fuzzing of the native parsers (F-28): every Monday and on
+# demand, each cargo-fuzz target runs for 10 minutes on Linux with a nightly
+# toolchain (libFuzzer). A crash fails the job; the reproducer is in the log
+# and under native/fuzz/artifacts on the runner. The same invariants run on
+# every CI build as native/tests/fuzz_smoke.rs (stable, any host).
+name: fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [maps_parser, mounts_parser]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+
+      - name: Fuzz ${{ matrix.target }} for 10 minutes
+        working-directory: native
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=600 -rss_limit_mb=2048
