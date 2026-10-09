@@ -1,0 +1,20 @@
+# Dependency updates (F-28 / R-20): weekly pull requests for Gradle, Cargo
+# (native core and fuzz harness) and the pinned GitHub Actions.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /native
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /native/fuzz
+    schedule:
+      interval: monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
