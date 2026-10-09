@@ -109,7 +109,7 @@ kotlin {
 dependencies {
     // Play Integrity attestation (Phase 7) — the only external runtime
     // dependency any detector in this module needs.
-    implementation("com.google.android.play:integrity:1.4.0")
+    implementation("com.google.android.play:integrity:1.6.0")
 
     // Keystore-backed EncryptedSharedPreferences for RaspEventShipper's
     // configureAndPersist/restore — the native-Kotlin equivalent of the
