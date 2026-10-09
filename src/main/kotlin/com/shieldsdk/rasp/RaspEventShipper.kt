@@ -20,13 +20,13 @@ import java.util.concurrent.Executors
  *
  * ## Two signing paths (configurable via [useEvidenceEnvelope])
  *
- * ### Legacy HMAC path (default, backward compatible)
+ * ### Legacy HMAC path (opt-in via [setUseEvidenceEnvelope(false)], for old backends)
  * - Request carries `X-Api-Key`, `X-Timestamp`, `X-Signature` (HMAC-SHA256)
  * - Signature keyed by credential's `apiSecret` — see [RaspHmacSigner]
  * - Backend validates via shared secret
  * - Works with existing backend ingestion endpoint
  *
- * ### New Evidence Envelope path (opt-in via [setUseEvidenceEnvelope(true)])
+ * ### Evidence Envelope path (default)
  * - Each batch wrapped in a [RaspEvidenceEnvelope] signed by the
  *   per-install hardware-backed EC P-256 device key ([RaspDeviceKey])
  * - Envelope includes: eventId, eventTime, monotonicCounter, nonce,
@@ -53,9 +53,13 @@ public object RaspEventShipper {
     @Volatile
     private var credential: RaspEventCredential? = null
 
-    /** When `true`, use the new Evidence Envelope + device key signing path. */
+    /**
+     * When `true` (the default since 1.2, F-14), results go as signed Evidence
+     * Envelopes with the device key; `false` selects the legacy HMAC path,
+     * which new backend applications refuse.
+     */
     @Volatile
-    private var useEvidenceEnvelope = false
+    private var useEvidenceEnvelope = true
 
     /** Per-process device key (lazy, created on first use). */
     @Volatile
@@ -96,7 +100,7 @@ public object RaspEventShipper {
         return parsed != null
     }
 
-    /** Enables the new Evidence Envelope signing path (opt-in). */
+    /** Chooses the Evidence Envelope path (`true`, default) or the legacy HMAC path (`false`). */
     public fun setUseEvidenceEnvelope(enabled: Boolean) {
         useEvidenceEnvelope = enabled
     }
@@ -166,7 +170,7 @@ public object RaspEventShipper {
         delivery = null
         registrar = null
         riskDelivery = null
-        useEvidenceEnvelope = false
+        useEvidenceEnvelope = true
     }
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -258,6 +262,8 @@ public object RaspEventShipper {
                 EncryptedRegistrationStore(appContext),
                 appContext.packageName,
                 signingCertSha256 = { RaspSigningProbes.signingCertSha256(appContext).ifEmpty { null } },
+                deviceId = { credential -> RaspDeviceIdentity.forDevice(appContext, credential.accountHashSalt) },
+                exchange = RaspHttpExchange.URL_CONNECTION,
             ).also { registrar = it }
         }
     }
@@ -318,11 +324,8 @@ public object RaspEventShipper {
     )
 
     private fun collectDeviceInfo(context: Context): DeviceInfo {
-        val deviceId = try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-        } catch (e: Exception) {
-            null
-        }
+        // A hash, never the raw ANDROID_ID (F-15); the same id registration sends.
+        val deviceId = RaspDeviceIdentity.forDevice(context, credential?.accountHashSalt)
         val appVersion = try {
             val pm = context.packageManager
             val info = pm.getPackageInfo(context.packageName, 0)
