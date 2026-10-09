@@ -1,8 +1,6 @@
 package com.shieldsdk.rasp
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -207,26 +205,22 @@ public class RaspEvidenceEnvelope(
 }
 
 /**
- * Counter persisted in EncryptedSharedPreferences with `commit()` (synchronous),
+ * Counter persisted in [RaspSecurePrefs] (Keystore AES-GCM) with `commit()` (synchronous),
  * so a value is on disk before any envelope carrying it exists. Same file and
  * key as the earlier implementation, so existing installs keep counting up.
  */
 internal class RaspEncryptedCounterStore(private val context: Context) : RaspEnvelopeCounterStore {
 
-    private val prefs by lazy {
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_NAME,
-            MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    /** Keystore-encrypted (F-24); migrates the counter of the old EncryptedSharedPreferences file once. */
+    private val prefs by lazy { RaspSecurePrefs.open(context, PREFS_NAME) }
 
     override fun next(): Long? = synchronized(LOCK) {
         try {
-            val next = prefs.getLong(KEY, 0L) + 1
-            if (prefs.edit().putLong(KEY, next).commit()) next else null
+            val stored = prefs.getString(KEY)
+            // Present but unreadable: never start again at 1 (the backend would refuse it as a replay).
+            if (stored == null && prefs.contains(KEY)) throw IllegalStateException("envelope counter unreadable")
+            val next = (stored?.toLongOrNull() ?: 0L) + 1
+            if (prefs.putString(KEY, next.toString())) next else null
         } catch (e: Exception) {
             try {
                 RaspShieldCore.logger.onDetectorError("envelope_counter", e)

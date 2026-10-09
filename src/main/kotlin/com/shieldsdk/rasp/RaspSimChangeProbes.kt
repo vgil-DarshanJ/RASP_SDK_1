@@ -4,8 +4,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.telephony.SubscriptionManager
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -159,52 +157,51 @@ object RaspSimChangeProbes {
         null
     }
 
-    /** EncryptedSharedPreferences-backed [Store]; writes use `commit()`. */
+    /** [RaspSecurePrefs]-backed [Store] (Keystore AES-GCM, F-24); writes use `commit()`. */
     class EncryptedStore(context: Context) : Store {
         private val appContext = context.applicationContext ?: context
-        private val prefs by lazy {
-            EncryptedSharedPreferences.create(
-                appContext,
-                "rasp_sim_state",
-                MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        }
+        private val prefs by lazy { RaspSecurePrefs.open(appContext, "rasp_sim_state") }
 
         override fun salt(): ByteArray? = try {
             synchronized(LOCK) {
-                prefs.getString("salt", null)?.let { RaspBase64.decode(it) } ?: run {
+                prefs.getString("salt")?.let { RaspBase64.decode(it) } ?: run {
+                    if (prefs.contains("salt")) return@synchronized null // unreadable: do not replace it silently
                     val salt = ByteArray(32).also { SecureRandom().nextBytes(it) }
-                    if (prefs.edit().putString("salt", RaspBase64.encode(salt)).commit()) salt else null
+                    if (prefs.putString("salt", RaspBase64.encode(salt))) salt else null
                 }
             }
         } catch (e: Exception) {
             null
         }
 
-        /** Throws when the encrypted preferences cannot be read (see [Store.load]). */
-        override fun load(): Baseline? =
-            prefs.getString("hash", null)?.let { hash ->
-                Baseline(
-                    hash,
-                    prefs.getInt("sim_count", 0),
-                    prefs.getLong("changed_at", -1L).takeIf { it >= 0 },
-                )
+        /** Throws when a stored baseline cannot be read (see [Store.load]). */
+        override fun load(): Baseline? {
+            val hash = prefs.getString("hash")
+            if (hash == null) {
+                if (prefs.contains("hash")) throw IllegalStateException("SIM baseline unreadable")
+                return null
             }
+            return Baseline(
+                hash,
+                prefs.getString("sim_count")?.toIntOrNull() ?: 0,
+                prefs.getString("changed_at")?.toLongOrNull()?.takeIf { it >= 0 },
+            )
+        }
 
         override fun clear(): Boolean = try {
-            prefs.edit().remove("hash").remove("sim_count").remove("changed_at").commit()
+            prefs.remove("hash", "sim_count", "changed_at")
         } catch (e: Exception) {
             false
         }
 
         override fun save(baseline: Baseline): Boolean = try {
-            prefs.edit()
-                .putString("hash", baseline.hash)
-                .putInt("sim_count", baseline.simCount)
-                .putLong("changed_at", baseline.changeDetectedAtMillis ?: -1L)
-                .commit()
+            prefs.putAll(
+                mapOf(
+                    "hash" to baseline.hash,
+                    "sim_count" to baseline.simCount.toString(),
+                    "changed_at" to (baseline.changeDetectedAtMillis ?: -1L).toString(),
+                ),
+            )
         } catch (e: Exception) {
             false
         }
