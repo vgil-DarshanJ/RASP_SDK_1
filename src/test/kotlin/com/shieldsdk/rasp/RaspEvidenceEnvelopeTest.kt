@@ -332,4 +332,32 @@ class RaspEvidenceEnvelopeTest {
         out.writeText(fixture)
         assertNotNull(out.readText())
     }
+
+    // ── Device info ──────────────────────────────────────────────────────
+
+    @Test
+    fun `device info is signed and tampering with it fails verification`() {
+        val signer = SoftwareSigner()
+        val device = RaspEvidenceEnvelope.deviceInfo("OnePlus", "CPH2581", "15", "1.0.0")
+        val fields = RaspEvidenceEnvelope(signer, MemoryCounter(), "com.example.bank", "test", device = device)
+            .buildFields(results)!!
+
+        assertEquals(
+            mapOf("manufacturer" to "OnePlus", "model" to "CPH2581", "osPlatform" to "android", "osVersion" to "15", "appVersion" to "1.0.0"),
+            fields["device"],
+        )
+        val spki = signer.publicKeySpki()
+        assertTrue(RaspEvidenceEnvelope.verify(fields, spki))
+        assertTrue(rawVerify(fields, signer.keyPair.public))
+        assertFalse("changed model", RaspEvidenceEnvelope.verify(fields + ("device" to device + ("model" to "Pixel 9")), spki))
+        assertFalse("removed device", RaspEvidenceEnvelope.verify(fields - "device", spki))
+    }
+
+    @Test
+    fun `device info leaves out blank values and caps length, and is absent when not given`() {
+        val info = RaspEvidenceEnvelope.deviceInfo(" Samsung ", "", "14", null)
+        assertEquals(mapOf("manufacturer" to "Samsung", "osPlatform" to "android", "osVersion" to "14"), info)
+        assertEquals(100, RaspEvidenceEnvelope.deviceInfo("x".repeat(300), null, null, null)["manufacturer"]!!.length)
+        assertFalse(builder().buildFields(results)!!.containsKey("device"))
+    }
 }

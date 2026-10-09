@@ -36,6 +36,7 @@ public interface RaspEnvelopeCounterStore {
  * {
  *   "appId": "com.example.app",
  *   "detectorResults": [ { "detectorId", "status", "evidence", "reason"?, "observedAtMillis" } ],
+ *   "device": { "manufacturer", "model", "osPlatform", "osVersion", "appVersion"? },
  *   "deviceKeyId": "Base64(SHA-256(SPKI))",
  *   "envelopeVersion": 1,
  *   "eventId": "uuid-v4",
@@ -53,6 +54,10 @@ public interface RaspEnvelopeCounterStore {
  * `signature`** — including `signatureAlgorithm`, so the algorithm label cannot
  * be swapped either. The backend removes only `signature` before verifying
  * (`BE/src/ingestion/routes.ts`), so both sides sign/verify the same field set.
+ *
+ * `device` (optional, signed like everything else) names the phone for the
+ * dashboard: model, manufacturer, OS and app version. It carries no
+ * identifier; the device is still identified by `deviceKeyId`.
  *
  * ## Replay properties
  * - `monotonicCounter` comes from a [RaspEnvelopeCounterStore] that persists
@@ -72,6 +77,8 @@ public class RaspEvidenceEnvelope(
     private val sdkVersion: String = BuildConfig.RASP_ENGINE_VERSION,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
+    /** The envelope's `device` object; omitted when `null`. Production: [deviceInfo]. */
+    private val device: Map<String, String>? = null,
 ) {
 
     /**
@@ -94,6 +101,7 @@ public class RaspEvidenceEnvelope(
             "detectorResults" to results.map(::resultFields),
             "signatureAlgorithm" to SIGNATURE_ALGORITHM,
         )
+        if (!device.isNullOrEmpty()) unsigned["device"] = device
         val signature = signer.signDer(signingInput(unsigned)) ?: return null
         return unsigned + ("signature" to RaspBase64.encode(signature))
     }
@@ -154,11 +162,46 @@ public class RaspEvidenceEnvelope(
             false
         }
 
+        /** Longest value kept in the `device` object (the backend stores at most 200). */
+        internal const val DEVICE_FIELD_MAX = 100
+
+        /**
+         * The `device` object: entries with a blank value are left out, the
+         * rest trimmed to [DEVICE_FIELD_MAX] characters.
+         */
+        @JvmStatic
+        public fun deviceInfo(
+            manufacturer: String?,
+            model: String?,
+            osVersion: String?,
+            appVersion: String?,
+            osPlatform: String = "android",
+        ): Map<String, String> = linkedMapOf(
+            "manufacturer" to manufacturer,
+            "model" to model,
+            "osPlatform" to osPlatform,
+            "osVersion" to osVersion,
+            "appVersion" to appVersion,
+        ).mapNotNull { (k, v) -> v?.trim()?.takeIf { it.isNotEmpty() }?.let { k to it.take(DEVICE_FIELD_MAX) } }.toMap()
+
+        /** [deviceInfo] for this phone: `Build` values and the host app's versionName. */
+        @JvmStatic
+        public fun deviceInfo(context: Context): Map<String, String> {
+            val appVersion = try {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName
+            } catch (e: Exception) {
+                null
+            }
+            return deviceInfo(android.os.Build.MANUFACTURER, android.os.Build.MODEL, android.os.Build.VERSION.RELEASE, appVersion)
+        }
+
         /** Production wiring: hardware device key + encrypted, synchronously persisted counter. */
         @JvmStatic
         public fun forDevice(context: Context, deviceKey: RaspDeviceKey): RaspEvidenceEnvelope {
             val app = context.applicationContext ?: context
-            return RaspEvidenceEnvelope(deviceKey.asEnvelopeSigner(), RaspEncryptedCounterStore(app), app.packageName)
+            return RaspEvidenceEnvelope(
+                deviceKey.asEnvelopeSigner(), RaspEncryptedCounterStore(app), app.packageName, device = deviceInfo(app),
+            )
         }
     }
 }
