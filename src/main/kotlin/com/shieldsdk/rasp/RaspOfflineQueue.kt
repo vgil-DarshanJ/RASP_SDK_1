@@ -1,9 +1,6 @@
 package com.shieldsdk.rasp
 
 import android.content.Context
-import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
@@ -223,44 +220,36 @@ open class RaspOfflineQueue(
 }
 
 /**
- * [RaspQueueStore] in EncryptedSharedPreferences (AES-256-GCM values,
- * Keystore-wrapped key). Writes use `commit()` so "stored" means on disk.
- * Keys `env_<id>` — the same file and key prefix as the earlier
- * implementation, so envelopes queued by it are picked up.
+ * [RaspQueueStore] in [RaspSecurePrefs] (AES-256-GCM, Keystore key; F-24).
+ * Writes use `commit()` so "stored" means on disk. Keys `env_<id>`; envelopes
+ * queued in the earlier EncryptedSharedPreferences file are migrated once.
  */
 internal class RaspEncryptedQueueStore(private val context: Context) : RaspQueueStore {
 
-    private val prefs: SharedPreferences by lazy {
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_NAME,
-            MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    private val prefs: RaspSecurePrefs by lazy { RaspSecurePrefs.open(context, PREFS_NAME) }
 
     override fun loadAll(): Map<Long, String> =
-        prefs.all.mapNotNull { (key, value) ->
+        prefs.keys().mapNotNull { key ->
             val id = key.removePrefix(PREFIX).takeIf { key.startsWith(PREFIX) }?.toLongOrNull()
-            if (id != null && value is String) id to value else null
+            val value = id?.let { prefs.getString(key) }
+            if (id != null && value != null) id to value else null
         }.toMap()
 
     override fun put(id: Long, envelopeJson: String): Boolean = try {
-        prefs.edit().putString("$PREFIX$id", envelopeJson).commit()
+        prefs.putString("$PREFIX$id", envelopeJson)
     } catch (e: Exception) {
         false
     }
 
     override fun remove(id: Long) {
         try {
-            prefs.edit().remove("$PREFIX$id").commit()
+            prefs.remove("$PREFIX$id")
         } catch (_: Exception) { }
     }
 
     override fun clear() {
         try {
-            prefs.edit().clear().commit()
+            prefs.clear()
         } catch (_: Exception) { }
     }
 

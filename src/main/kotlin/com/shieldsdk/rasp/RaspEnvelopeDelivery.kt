@@ -1,8 +1,6 @@
 package com.shieldsdk.rasp
 
 import android.content.Context
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
@@ -389,42 +387,33 @@ public class RaspEnvelopeDelivery(
     }
 }
 
-/** [RaspRegistrationStore] in EncryptedSharedPreferences; writes use `commit()`. */
+/** [RaspRegistrationStore] in [RaspSecurePrefs] (Keystore AES-GCM); writes use `commit()`. */
 public class EncryptedRegistrationStore(context: Context) : RaspRegistrationStore {
     private val appContext = context.applicationContext ?: context
-    private val prefs by lazy {
-        EncryptedSharedPreferences.create(
-            appContext,
-            "rasp_device_registration",
-            MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    /** Keystore-encrypted (F-24); migrates the old EncryptedSharedPreferences file once. */
+    private val prefs by lazy { RaspSecurePrefs.open(appContext, "rasp_device_registration") }
 
     override fun registeredKeyId(): String? = try {
-        prefs.getString("registered_key_id", null)
+        prefs.getString("registered_key_id")
     } catch (e: Exception) {
         null
     }
 
     override fun setRegisteredKeyId(keyId: String?): Boolean = try {
-        prefs.edit().apply {
-            if (keyId == null) remove("registered_key_id").remove("registration_version") else putString("registered_key_id", keyId)
-        }.commit()
+        if (keyId == null) prefs.remove("registered_key_id", "registration_version") else prefs.putString("registered_key_id", keyId)
     } catch (e: Exception) {
         false
     }
 
     /** 0 for keys registered before registration versions existed. */
     override fun registrationVersion(): Int = try {
-        prefs.getInt("registration_version", 0)
+        prefs.getString("registration_version")?.toIntOrNull() ?: 0
     } catch (e: Exception) {
         0
     }
 
     override fun setRegistrationVersion(version: Int): Boolean = try {
-        prefs.edit().putInt("registration_version", version).commit()
+        prefs.putString("registration_version", version.toString())
     } catch (e: Exception) {
         false
     }

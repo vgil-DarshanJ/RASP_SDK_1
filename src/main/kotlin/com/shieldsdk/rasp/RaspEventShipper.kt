@@ -4,8 +4,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -116,21 +114,16 @@ public object RaspEventShipper {
     private const val PREFS_FILE = "rasp_shield_secure_prefs"
     private const val PREFS_KEY = "rasp_shield_ingestion_credential"
 
-    private fun securePrefs(context: Context) = EncryptedSharedPreferences.create(
-        context.applicationContext ?: context,
-        PREFS_FILE,
-        MasterKey.Builder(context.applicationContext ?: context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    /** Keystore-encrypted (F-24); migrates the credential from the old EncryptedSharedPreferences file once. */
+    private fun securePrefs(context: Context) = RaspSecurePrefs.open(context, PREFS_FILE)
 
     public fun configureAndPersist(context: Context, credentialJson: String): Boolean {
         val ok = configure(credentialJson)
         if (ok) {
             try {
-                securePrefs(context).edit().putString(PREFS_KEY, credentialJson).apply()
+                if (!securePrefs(context).putString(PREFS_KEY, credentialJson)) {
+                    notifyLoggerOnly("event_shipper", "Configured, but the credential was not written to encrypted storage")
+                }
             } catch (e: Exception) {
                 notifyLoggerOnly(
                     "event_shipper",
@@ -143,7 +136,7 @@ public object RaspEventShipper {
 
     public fun restore(context: Context): Boolean {
         return try {
-            val stored = securePrefs(context).getString(PREFS_KEY, null)
+            val stored = securePrefs(context).getString(PREFS_KEY)
             if (stored.isNullOrEmpty()) false else configure(stored)
         } catch (e: Exception) {
             notifyLoggerOnly("event_shipper", "Could not read persisted credential: ${e.message}")
@@ -154,7 +147,7 @@ public object RaspEventShipper {
     public fun clearPersisted(context: Context) {
         credential = null
         try {
-            securePrefs(context).edit().remove(PREFS_KEY).apply()
+            securePrefs(context).remove(PREFS_KEY)
         } catch (e: Exception) {
             notifyLoggerOnly("event_shipper", "Could not clear persisted credential: ${e.message}")
         }
