@@ -92,6 +92,13 @@ public data class RaspLeanConfig(
     /** Ed25519 public key that signs the list: Base64 of 32 raw bytes or of an X.509 SPKI. */
     val malwareReputationPublicKey: String? = null,
     /**
+     * Keep the list current from the backend (`GET /v1/reputation/list`, once
+     * a day; see [RaspReputationListUpdater]). The list must verify with
+     * [malwareReputationPublicKey], or else with the credential's
+     * `reputation_public_key`. Default off.
+     */
+    val malwareReputationAutoUpdate: Boolean = false,
+    /**
      * Signed Evidence Envelopes (device key, replay-resistant) instead of the
      * legacy HMAC path. Default on (F-14); applied by [RaspLeanSession.start].
      */
@@ -336,7 +343,15 @@ public class RaspLeanSession private constructor(
             RaspShieldCore.checkDeviceStateAttestationBlocking(appContext, config.maxSecurityPatchAgeDays)
         }
         add(config.malwareReputationDetection, RaspMalwareReputationProbes.DETECTOR_ID) {
-            RaspShieldCore.checkMalwareReputationBlocking(appContext, config.malwareReputationListJson, config.malwareReputationPublicKey)
+            var listJson = config.malwareReputationListJson
+            var publicKey = config.malwareReputationPublicKey
+            if (config.malwareReputationAutoUpdate) {
+                val credential = RaspEventShipper.currentCredential()
+                publicKey = publicKey ?: credential?.reputationPublicKey
+                RaspReputationListUpdater.refreshIfDue(appContext.filesDir, credential, publicKey, listJson)
+                listJson = RaspReputationListUpdater.listFor(appContext.filesDir, listJson, publicKey)
+            }
+            RaspShieldCore.checkMalwareReputationBlocking(appContext, listJson, publicKey)
         }
         add(config.remoteControlAppDetection, RaspRemoteControlProbes.DETECTOR_ID) {
             RaspShieldCore.checkRemoteControlAppBlocking(appContext, config.remoteControlListJson, config.remoteControlListPublicKey)

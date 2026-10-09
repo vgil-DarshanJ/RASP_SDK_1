@@ -30,6 +30,11 @@ public data class RaspEventCredential(
      * it existed.
      */
     val accountHashSalt: String? = null,
+    /**
+     * Ed25519 public key (Base64) that signs the backend's malware reputation
+     * list (`reputation_public_key`); `null` when the backend has none.
+     */
+    val reputationPublicKey: String? = null,
 )
 
 public object RaspEventCredentialParser {
@@ -49,7 +54,8 @@ public object RaspEventCredentialParser {
             null
         } else {
             val salt = obj.optString("account_hash_salt", "").takeIf(RaspAccountHasher::isValidSalt)
-            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl, salt)
+            val reputationKey = obj.optString("reputation_public_key", "").trim().takeIf { it.isNotEmpty() }
+            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl, salt, reputationKey)
         }
     } catch (e: Exception) {
         null
