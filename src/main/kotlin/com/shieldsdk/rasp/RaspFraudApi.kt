@@ -185,7 +185,8 @@ public class RaspFraudApi internal constructor(
         "riskScore" to risk.score,
         "riskVerdict" to risk.verdict.name,
         "location" to locationProvider()?.takeIf { it.shareWithBackend }?.let {
-            linkedMapOf<String, Any?>("latitude" to it.latitude, "longitude" to it.longitude, "capturedAtMillis" to it.capturedAtMillis)
+            // Rounded to 3 decimals (~100 m) before it leaves the phone (F-16).
+            linkedMapOf<String, Any?>("latitude" to coarseCoordinate(it.latitude), "longitude" to coarseCoordinate(it.longitude), "capturedAtMillis" to it.capturedAtMillis)
         },
         "signatureAlgorithm" to RaspEvidenceEnvelope.SIGNATURE_ALGORITHM,
     )

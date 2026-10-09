@@ -49,6 +49,56 @@ public fun interface RaspHttpPost {
     }
 }
 
+/** An HTTP answer with its body (at most 16 KB is read), `status` -1 when no response was received. */
+public data class RaspHttpResponse(val status: Int, val body: String?)
+
+/** POSTs a body and returns status and body; used where the answer carries data (the registration challenge). */
+public fun interface RaspHttpExchange {
+    public fun post(url: String, headers: Map<String, String>, body: ByteArray): RaspHttpResponse
+
+    public companion object {
+        private const val MAX_BODY_BYTES = 16 * 1024
+
+        /** HttpURLConnection implementation used in production. */
+        public val URL_CONNECTION: RaspHttpExchange = RaspHttpExchange { url, headers, body ->
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    doOutput = true
+                    headers.forEach { (name, value) -> setRequestProperty(name, value) }
+                }
+                connection.outputStream.use { it.write(body) }
+                val status = connection.responseCode
+                val text = if (status in 200..299) {
+                    connection.inputStream.use { stream ->
+                        val bytes = stream.readNBytesCompat(MAX_BODY_BYTES)
+                        String(bytes, Charsets.UTF_8)
+                    }
+                } else null
+                RaspHttpResponse(status, text)
+            } catch (e: Exception) {
+                RaspHttpResponse(-1, null)
+            } finally {
+                connection?.disconnect()
+            }
+        }
+
+        private fun java.io.InputStream.readNBytesCompat(max: Int): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(4096)
+            while (out.size() < max) {
+                val n = read(buffer, 0, minOf(buffer.size, max - out.size()))
+                if (n < 0) break
+                out.write(buffer, 0, n)
+            }
+            return out.toByteArray()
+        }
+    }
+}
+
 /** Counters for envelopes that left the queue, by reason. Process lifetime. */
 public class RaspDeliveryStats {
     internal val delivered = AtomicLong()
@@ -73,6 +123,9 @@ public interface RaspRegistrationKeySource {
     public fun deviceKeyId(): String?
     public fun publicKeyBase64(): String?
     public fun attestationChainBase64(): List<String>?
+
+    /** ECDSA (DER) signature with the device key, for the registration challenge; `null` when unavailable. */
+    public fun signDer(payload: ByteArray): ByteArray? = null
 }
 
 /** Which device key the backend has accepted. Production: [EncryptedRegistrationStore]. */
@@ -81,6 +134,15 @@ public interface RaspRegistrationStore {
 
     /** `null` clears it. `true` once written. */
     public fun setRegisteredKeyId(keyId: String?): Boolean
+
+    /**
+     * Format of the registration the stored key was registered with
+     * ([RaspDeviceRegistrar.REGISTRATION_VERSION]); an older one makes the
+     * registrar register once more. Stores that do not keep it count as current.
+     */
+    public fun registrationVersion(): Int = RaspDeviceRegistrar.REGISTRATION_VERSION
+
+    public fun setRegistrationVersion(version: Int): Boolean = true
 }
 
 /**
@@ -91,7 +153,19 @@ public interface RaspRegistrationStore {
  * with the credential's secret — because the backend requires that for
  * registration. Once the backend answers 200/201, the key id is stored
  * (encrypted) and the device is not registered again unless [invalidate] is
- * called after the backend reports an unknown device.
+ * called after the backend reports an unknown (or not attested) device, or
+ * the stored registration is from an older [REGISTRATION_VERSION].
+ *
+ * ## Proof of possession (F-13)
+ * With [exchange], each registration first asks `POST /v1/devices/challenge`
+ * for a one-time challenge and signs `rasp-register-v1:<challenge>:<keyId>`
+ * with the device key; challenge and signature go with the registration.
+ * No challenge endpoint (404/405, older backend) → registration without
+ * proof; network error, 429 or 5xx → [Result.RETRY_LATER].
+ *
+ * ## Stable device id (F-15)
+ * [deviceId] (production: [RaspDeviceIdentity.forDevice]) is sent as
+ * `deviceId`, so the backend recognises a reinstall of the same phone.
  */
 public class RaspDeviceRegistrar(
     private val keySource: RaspRegistrationKeySource,
@@ -102,15 +176,56 @@ public class RaspDeviceRegistrar(
     private val clock: () -> Long = System::currentTimeMillis,
     /** The app's signing certificate SHA-256 (uppercase hex), sent as `signingCertSha256` when known. */
     private val signingCertSha256: () -> String? = { null },
+    /** Stable device id sent as `deviceId` (see [RaspDeviceIdentity]); `null` → left out. */
+    private val deviceId: (RaspEventCredential) -> String? = { null },
+    /** For the registration challenge; `null` → registrations carry no proof of possession. */
+    private val exchange: RaspHttpExchange? = null,
 ) {
     public enum class Result { REGISTERED, RETRY_LATER, REJECTED }
 
-    /** Registers only when the stored key id is not the current key's id. */
+    /** Registers only when the stored key id is not the current key's id, or was registered in an older format. */
     @Synchronized
     public fun ensureRegistered(credential: RaspEventCredential): Result {
         val keyId = keySource.deviceKeyId() ?: return Result.RETRY_LATER
-        if (store.registeredKeyId() == keyId) return Result.REGISTERED
+        if (store.registeredKeyId() == keyId && store.registrationVersion() >= REGISTRATION_VERSION) return Result.REGISTERED
         return register(credential)
+    }
+
+    private sealed class Proof {
+        data class Signed(val challenge: String, val signatureBase64: String) : Proof()
+        object NotSupported : Proof()
+        object Retry : Proof()
+    }
+
+    private fun proofOfPossession(credential: RaspEventCredential, keyId: String): Proof {
+        val http = exchange ?: return Proof.NotSupported
+        val url = RaspBackendUrls.endpoint(credential.ingestionUrl, "devices/challenge") ?: return Proof.NotSupported
+        val body = "{}".toByteArray(Charsets.UTF_8)
+        val timestamp = clock().toString()
+        val response = http.post(
+            url,
+            mapOf(
+                "Content-Type" to "application/json",
+                "X-Api-Key" to credential.apiKey,
+                "X-Timestamp" to timestamp,
+                "X-Signature" to RaspHmacSigner.sign(credential.apiSecret, timestamp, body),
+            ),
+            body,
+        )
+        return when {
+            response.status == -1 || response.status == 429 || response.status in 500..599 -> Proof.Retry
+            response.status != 200 -> Proof.NotSupported
+            else -> {
+                val challenge = try {
+                    ((RaspJson.parse(response.body ?: "") as? Map<*, *>)?.get("challenge") as? String)
+                } catch (e: Exception) {
+                    null
+                }
+                val signature = challenge?.let { keySource.signDer(possessionMessage(it, keyId)) }
+                if (challenge == null || signature == null) Proof.NotSupported
+                else Proof.Signed(challenge, RaspBase64.encode(signature))
+            }
+        }
     }
 
     /** Forgets the stored registration (the backend said it does not know this device). */
@@ -126,12 +241,22 @@ public class RaspDeviceRegistrar(
         val chain = keySource.attestationChainBase64()
         if (keyId == null || publicKey == null || chain.isNullOrEmpty()) return Result.RETRY_LATER
 
+        val proof = proofOfPossession(credential, keyId)
+        if (proof is Proof.Retry) return Result.RETRY_LATER
+
         val fields = linkedMapOf<String, Any?>(
             "appId" to appId,
             "publicKey" to publicKey,
             "attestationChain" to chain,
             "sdkVersion" to sdkVersion,
         )
+        try { deviceId(credential) } catch (e: Exception) { null }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { fields["deviceId"] = it }
+        if (proof is Proof.Signed) {
+            fields["challenge"] = proof.challenge
+            fields["challengeSignature"] = proof.signatureBase64
+        }
         // The backend stores it on the registration and compares later tamper
         // evidence against it (Task 6.0 Part 2.3). Optional: left out when unknown.
         try { signingCertSha256() } catch (e: Exception) { null }
@@ -148,13 +273,25 @@ public class RaspDeviceRegistrar(
         val status = http.post(registrationUrl(credential.ingestionUrl), headers, body)
         return when {
             status == 200 || status == 201 ->
-                if (store.setRegisteredKeyId(keyId)) Result.REGISTERED else Result.RETRY_LATER
+                if (store.setRegisteredKeyId(keyId) && store.setRegistrationVersion(REGISTRATION_VERSION)) Result.REGISTERED
+                else Result.RETRY_LATER
             status == -1 || status == 429 || status in 500..599 -> Result.RETRY_LATER
             else -> Result.REJECTED
         }
     }
 
     public companion object {
+        /**
+         * 2: registrations carry `deviceId` and, when the backend offers it, a
+         * signed challenge. Keys registered in an older format register once more.
+         */
+        public const val REGISTRATION_VERSION: Int = 2
+
+        /** The bytes signed for the registration challenge (same as the backend's `possessionMessage`). */
+        @JvmStatic
+        public fun possessionMessage(challenge: String, deviceKeyId: String): ByteArray =
+            "rasp-register-v1:$challenge:$deviceKeyId".toByteArray(Charsets.UTF_8)
+
         /** `https://host/v1/events` → `https://host/v1/devices/register` (see [RaspBackendUrls.endpoint]). */
         @JvmStatic
         public fun registrationUrl(ingestionUrl: String): String =
@@ -272,7 +409,22 @@ public class EncryptedRegistrationStore(context: Context) : RaspRegistrationStor
     }
 
     override fun setRegisteredKeyId(keyId: String?): Boolean = try {
-        prefs.edit().apply { if (keyId == null) remove("registered_key_id") else putString("registered_key_id", keyId) }.commit()
+        prefs.edit().apply {
+            if (keyId == null) remove("registered_key_id").remove("registration_version") else putString("registered_key_id", keyId)
+        }.commit()
+    } catch (e: Exception) {
+        false
+    }
+
+    /** 0 for keys registered before registration versions existed. */
+    override fun registrationVersion(): Int = try {
+        prefs.getInt("registration_version", 0)
+    } catch (e: Exception) {
+        0
+    }
+
+    override fun setRegistrationVersion(version: Int): Boolean = try {
+        prefs.edit().putInt("registration_version", version).commit()
     } catch (e: Exception) {
         false
     }

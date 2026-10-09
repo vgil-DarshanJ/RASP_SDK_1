@@ -91,8 +91,11 @@ public data class RaspLeanConfig(
     val malwareReputationListJson: String? = null,
     /** Ed25519 public key that signs the list: Base64 of 32 raw bytes or of an X.509 SPKI. */
     val malwareReputationPublicKey: String? = null,
-    /** Enable Evidence Envelope path (device-key signed, replay-resistant) instead of legacy HMAC. Default off. */
-    val useEvidenceEnvelope: Boolean = false,
+    /**
+     * Signed Evidence Envelopes (device key, replay-resistant) instead of the
+     * legacy HMAC path. Default on (F-14); applied by [RaspLeanSession.start].
+     */
+    val useEvidenceEnvelope: Boolean = true,
     val pollIntervalMillis: Long = 4_000,
     val heartbeatIntervalMillis: Long = 20_000, val detectorTimeoutMillis: Long = 6_000,
     // Task 8.1 fraud signals — all off by default
@@ -244,6 +247,8 @@ public class RaspLeanSession private constructor(
     public fun refreshNow() { if (!disposed.get()) scheduler.execute(::tick) }
 
     private fun applyConfig() {
+        // F-03: native hosts get the path they configured, not only the Flutter plugin.
+        RaspEventShipper.setUseEvidenceEnvelope(config.useEvidenceEnvelope)
         if (config.screenshotProtection) ScreenshotGuard.enable(activityProvider?.invoke())
         else ScreenshotGuard.disable(activityProvider?.invoke())
         if (config.clipboardProtection) clipboard.enable(config.clipboardAutoClear) else clipboard.disable()
@@ -444,10 +449,11 @@ internal fun leanControlResults(
  */
 internal fun withSharedLocation(result: RaspCheckResult, location: RaspLocationSnapshot?): RaspCheckResult {
     if (location == null || !location.shareWithBackend) return result
+    // Rounded to 3 decimals (~100 m) like the heartbeat, on every path (F-16).
     return result.copy(evidence = result.evidence + listOf(
         RaspEvidence("location_opt_in", true),
-        RaspEvidence("latitude", location.latitude),
-        RaspEvidence("longitude", location.longitude),
+        RaspEvidence("latitude", coarseCoordinate(location.latitude)),
+        RaspEvidence("longitude", coarseCoordinate(location.longitude)),
         RaspEvidence("location_accuracy_m", location.accuracyMeters),
         RaspEvidence("location_captured_at_millis", location.capturedAtMillis),
     ))

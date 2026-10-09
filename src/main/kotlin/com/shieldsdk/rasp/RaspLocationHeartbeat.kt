@@ -113,3 +113,6 @@ public data class RaspLocationHeartbeatStatus(
         }
     }
 }
+
+/** Latitude / longitude rounded to 3 decimals (about 110 m): the most precise location that leaves the phone (F-16). */
+internal fun coarseCoordinate(value: Double): Double = (value * 1000).roundToLong() / 1000.0
