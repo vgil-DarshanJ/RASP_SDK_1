@@ -9,7 +9,7 @@ categories from `FE/lib/alertCatalog.ts`; severities from
 
 | Fact | Value |
 |---|---|
-| On-device detectors | **42** (including the 4 basic controls: screenshot block, USB, ADB, clipboard). Every one is off until the host app turns it on. |
+| On-device detectors | **43** (including the 4 basic controls: screenshot block, USB, ADB, clipboard). Every one is off until the host app turns it on. |
 | Alerts raised by the backend | **7** (signing-certificate mismatch and 6 fraud-risk rules) |
 | Result states | **5**: SECURE, DETECTED, UNAVAILABLE, UNKNOWN, ERROR. Only DETECTED is a threat; a check that cannot decide is never SECURE. |
 | Platforms available | **Android** — native (Kotlin/Java, engine AAR + `sdk_rasp/android_native`) and **Flutter on Android** (`rasp_shield` plugin) |
@@ -17,12 +17,13 @@ categories from `FE/lib/alertCatalog.ts`; severities from
 | Minimum Android | Engine AAR: Android 6.0 (API 23). Flutter apps: Flutter's own minimum, Android 7.0 (API 24) with Flutter 3.47 |
 | Versions (2026-10-09) | Engine `com.shieldsdk.rasp:android-core` 1.1.0 (`1.1.0-local` in development builds; releases from `v*` tags), Flutter plugin `rasp_shield` 1.1.0, trial app 1.1.0 (versionCode 2) |
 | Event delivery | Signed evidence envelopes (device key in the Keystore) by default; legacy HMAC batches only for applications that keep them on |
+| Remote configuration | Signed (Ed25519) per-application settings from `GET /v1/config`, off by default (`remoteConfigEnabled`). It can switch detectors only inside the app's own ceiling (`remoteManagedDetectors`, default none) and change intervals, risk thresholds and country lists within hard bounds. It cannot add code or features, change the ingestion URL, credential, keys, envelopes or TLS pins. See `docs/REMOTE_CONFIG.md` in the backend. |
 | Wording | No absolute security claims and no other products' names anywhere |
 
 ## Detectors
 
-<!-- generated: 42 on-device, 7 backend -->
-### On the device (42)
+<!-- generated: 43 on-device, 7 backend -->
+### On the device (43)
 
 | Category | Detector | Id | Severity |
 |---|---|---|---|
@@ -59,6 +60,7 @@ categories from `FE/lib/alertCatalog.ts`; severities from
 | Runtime Protection | Frida / Instrumentation | `frida` | critical |
 | Runtime Protection | Hooking / Method Interception | `hook_detection` | critical |
 | Runtime Protection | Reverse-Engineering Tools | `re_tools` | high |
+| App Integrity | Remote Configuration Rejected | `remote_config_rejected` | high |
 | App Integrity | Signature / Repackaging | `repackage` | high |
 | App Integrity | App Tampering | `tamper` | high |
 | App Integrity | Task Hijacking | `task_hijack` | high |

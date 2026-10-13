@@ -87,3 +87,15 @@ The built-in package lists (`RaspRemoteControlProbes.builtInPackages`,
 `RaspOtpForwardingProbes.builtInAutoForwardPackages`) are a starting point
 and are declared in the engine `<queries>`; extend them with the signed list
 or config (and declare extra packages in the host manifest).
+
+## Task 10.0 remote configuration
+
+| Detector id | Backend severity | Dashboard title / category | Config flag (+ options) | DETECTED when | SECURE when | UNAVAILABLE / UNKNOWN when |
+|---|---|---|---|---|---|---|
+| `remote_config_rejected` | high | Remote Configuration Rejected / App Integrity | `remoteConfigEnabled` (+ `remoteManagedDetectors`, `remoteConfigPollMinutes`, `remoteConfigPublicKey`) | the last config received was refused; `reason` = `bad_signature`, `rollback`, `expired` or `invalid` (with `detail`, `rejected_version`). The last good config, or the app's own, stays in force | a verified config is applied (`remote_config_version`) | UNAVAILABLE: no credential or no config public key. UNKNOWN: nothing received yet, nothing published, or the stored config expired |
+
+Design, threat model and limits: `docs/REMOTE_CONFIG.md` in the backend
+repository (`FROUNTEND_BACKEND_RASPOWN/BE`). The cross-language fixture
+`src/test/resources/remote-config/fixture.json` is written by the backend's
+`scripts/remote-config-fixture.ts`; regenerate it there after changing the
+allowed fields or bounds, and copy it here.
