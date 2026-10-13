@@ -35,6 +35,11 @@ public data class RaspEventCredential(
      * list (`reputation_public_key`); `null` when the backend has none.
      */
     val reputationPublicKey: String? = null,
+    /**
+     * Ed25519 public key (Base64 SPKI) that signs the remote configuration
+     * (`config_public_key`, Task 10.0); `null` when the backend has none.
+     */
+    val configPublicKey: String? = null,
 )
 
 public object RaspEventCredentialParser {
@@ -55,7 +60,8 @@ public object RaspEventCredentialParser {
         } else {
             val salt = obj.optString("account_hash_salt", "").takeIf(RaspAccountHasher::isValidSalt)
             val reputationKey = obj.optString("reputation_public_key", "").trim().takeIf { it.isNotEmpty() }
-            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl, salt, reputationKey)
+            val configKey = obj.optString("config_public_key", "").trim().takeIf { it.isNotEmpty() }
+            RaspEventCredential(organizationId, applicationId, apiKey, apiSecret, ingestionUrl, salt, reputationKey, configKey)
         }
     } catch (e: Exception) {
         null
