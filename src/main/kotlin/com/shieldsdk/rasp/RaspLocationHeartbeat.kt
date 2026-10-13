@@ -16,7 +16,9 @@ import kotlin.math.roundToLong
  */
 internal class RaspLocationHeartbeat(intervalMillis: Long = DEFAULT_INTERVAL_MILLIS) {
 
-    val intervalMillis: Long = intervalMillis.coerceAtLeast(MIN_INTERVAL_MILLIS)
+    /** Can change while running (remote config, Task 10.0); never below [MIN_INTERVAL_MILLIS]. */
+    @Volatile var intervalMillis: Long = intervalMillis.coerceAtLeast(MIN_INTERVAL_MILLIS)
+        set(value) { field = value.coerceAtLeast(MIN_INTERVAL_MILLIS) }
 
     sealed class Action {
         data class Send(val result: RaspCheckResult) : Action()

@@ -134,6 +134,25 @@ public data class RaspLeanConfig(
      * at least 30 000. Heartbeats are sent only with a shared location.
      */
     val locationHeartbeatIntervalMillis: Long = RaspLocationHeartbeat.DEFAULT_INTERVAL_MILLIS,
+    /** How often the auto-updated malware list is refreshed, in hours (1..168). */
+    val malwareReputationRefreshHours: Int = 24,
+    // Task 10.0 signed remote configuration — off by default
+    /**
+     * Fetch and apply the signed remote config (`GET /v1/config`, see
+     * [RaspRemoteConfig]). Needs a credential with `config_public_key`, or
+     * [remoteConfigPublicKey]. A refused config is reported as
+     * `remote_config_rejected`. Default off.
+     */
+    val remoteConfigEnabled: Boolean = false,
+    /**
+     * The ceiling: detector ids (e.g. `root_jailbreak`) a remote config may
+     * switch on or off. Default empty = none; other detectors stay as set here.
+     */
+    val remoteManagedDetectors: Set<String> = emptySet(),
+    /** Minutes between remote-config checks (5..1440, ±20 % jitter). */
+    val remoteConfigPollMinutes: Int = 15,
+    /** Optional app-pinned Ed25519 key for the remote config (Base64 raw or SPKI); else the credential's. */
+    val remoteConfigPublicKey: String? = null,
 )
 
 public data class RaspLeanState(
@@ -145,6 +164,9 @@ public data class RaspLeanState(
     val risk: RaspRiskAssessment? = null,
     /** Delivery result of the last location heartbeat; `null` when none was sent. */
     val locationHeartbeat: RaspLocationHeartbeatStatus? = null,
+    /** Version of the applied remote config; `null` when none (Task 10.0). */
+    val remoteConfigVersion: Long? = null,
+    val remoteConfigStatus: RaspRemoteConfigStatus = RaspRemoteConfigStatus.OFF,
 ) { public companion object { @JvmField val INITIAL = RaspLeanState() } }
 
 public fun interface RaspLeanStateListener { fun onStateChanged(state: RaspLeanState) }
@@ -155,9 +177,11 @@ public fun interface RaspLeanStateListener { fun onStateChanged(state: RaspLeanS
  * worker rather than the caller/UI thread.
  */
 public class RaspLeanSession private constructor(
-    private val appContext: Context, private val config: RaspLeanConfig,
+    private val appContext: Context, private val localConfig: RaspLeanConfig,
     private val activityProvider: (() -> Activity?)?, private val screenGuard: RaspScreenGuard?,
 ) {
+    /** The config in force: the app's own, with a verified remote config applied (Task 10.0). */
+    @Volatile private var config: RaspLeanConfig = localConfig
     @Volatile private var location: RaspLocationSnapshot? = null
 
     /**
@@ -203,6 +227,44 @@ public class RaspLeanSession private constructor(
     }
 
     public fun setListener(value: RaspLeanStateListener?) { listener = value }
+
+    // ── Task 10.0: signed remote configuration ──────────────────────────
+
+    private val remote: RaspRemoteConfigClient? = if (!localConfig.remoteConfigEnabled) null else RaspRemoteConfigClient(
+        local = localConfig,
+        store = RaspRemoteConfigClient.securePrefsStore(appContext),
+        credential = { RaspEventShipper.currentCredential() },
+        deviceKeyId = { runCatching { RaspEventShipper.deviceKey(appContext).deviceKeyId() }.getOrNull() },
+        onApplied = ::applyEffective,
+    )
+
+    /** Checks for a new remote config now (in the background); no-op unless `remoteConfigEnabled`. */
+    public fun refreshRemoteConfigNow() { remote?.refreshAsync() }
+
+    private fun applyEffective(next: RaspLeanConfig) {
+        if (disposed.get()) return
+        try {
+            scheduler.execute { updateConfig(next) }
+        } catch (e: java.util.concurrent.RejectedExecutionException) {
+            // disposed meanwhile
+        }
+    }
+
+    /** Applies a new effective config to the running session, then scans at once. */
+    private fun updateConfig(next: RaspLeanConfig) {
+        if (disposed.get()) return
+        val previous = config
+        if (previous == next) return
+        config = next
+        shippingPolicy.heartbeatIntervalMillis = next.heartbeatIntervalMillis
+        heartbeat.intervalMillis = next.locationHeartbeatIntervalMillis
+        if (next.highRiskTransactionMode != previous.highRiskTransactionMode) highRiskMode = next.highRiskTransactionMode
+        if (next.pollIntervalMillis != previous.pollIntervalMillis) {
+            scheduled?.cancel(false)
+            scheduled = scheduler.scheduleWithFixedDelay(::tick, next.pollIntervalMillis, next.pollIntervalMillis, TimeUnit.MILLISECONDS)
+        }
+        tick()
+    }
 
     // ── Task 8.1: session risk and transaction API ─────────────────────
 
@@ -283,7 +345,8 @@ public class RaspLeanSession private constructor(
             current = RaspLeanState(active, usbConnected, usbCount, adb,
                 if (config.usbDetection || config.adbDetection) AdbGuard.isDeveloperModeEnabled(appContext) else null,
                 clipActive, clipCount, extended, if (config.sessionRiskScoring) risk else null,
-                RaspEventShipper.lastLocationHeartbeat())
+                RaspEventShipper.lastLocationHeartbeat(),
+                remote?.version, remote?.status ?: RaspRemoteConfigStatus.OFF)
             runCatching { listener?.onStateChanged(current) }
             ship(leanControlResults(config, active, usbConnected, usbCount, adb, clipActive, clipCount) + extended.values)
             // Independent of detector results, which ship only when they change.
@@ -348,7 +411,10 @@ public class RaspLeanSession private constructor(
             if (config.malwareReputationAutoUpdate) {
                 val credential = RaspEventShipper.currentCredential()
                 publicKey = publicKey ?: credential?.reputationPublicKey
-                RaspReputationListUpdater.refreshIfDue(appContext.filesDir, credential, publicKey, listJson)
+                RaspReputationListUpdater.refreshIfDue(
+                    appContext.filesDir, credential, publicKey, listJson,
+                    intervalMillis = config.malwareReputationRefreshHours.coerceIn(1, 168) * 3_600_000L,
+                )
                 listJson = RaspReputationListUpdater.listFor(appContext.filesDir, listJson, publicKey)
             }
             RaspShieldCore.checkMalwareReputationBlocking(appContext, listJson, publicKey)
@@ -373,6 +439,7 @@ public class RaspLeanSession private constructor(
                 appContext, config.autoForwardPackages, config.remoteControlListJson, config.remoteControlListPublicKey,
             )
         }
+        remote?.let { client -> add(true, RaspRemoteConfig.DETECTOR_ID) { client.result() } }
         return work.mapValues { (id, call) -> timedDetector.run(id, config.detectorTimeoutMillis, call) }
     }
 
@@ -399,7 +466,7 @@ public class RaspLeanSession private constructor(
             .forEach { result -> RaspEventShipper.shipAsync(appContext, listOf(withSharedLocation(result, currentLocation))) }
     }
 
-    public fun dispose() { if (disposed.compareAndSet(false, true)) { scheduled?.cancel(false); scheduler.shutdownNow(); timedDetector.shutdown(); if (config.clipboardProtection) clipboard.disable() } }
+    public fun dispose() { if (disposed.compareAndSet(false, true)) { remote?.stop(); scheduled?.cancel(false); scheduler.shutdownNow(); timedDetector.shutdown(); if (config.clipboardProtection) clipboard.disable() } }
 
     public companion object {
         @JvmStatic @JvmOverloads public fun start(context: Context, config: RaspLeanConfig, activityProvider: (() -> Activity?)? = null, screenGuardForOverlay: RaspScreenGuard? = null): RaspLeanSession {
@@ -413,6 +480,8 @@ public class RaspLeanSession private constructor(
             // Always enqueue the initial scan; never perform network/disk work on the caller thread.
             session.scheduler.execute(session::tick)
             session.scheduled = session.scheduler.scheduleWithFixedDelay(session::tick, config.pollIntervalMillis, config.pollIntervalMillis, TimeUnit.MILLISECONDS)
+            // Remote config: stored one first, then the backend; own thread, never the caller's.
+            session.remote?.start()
             return session
         }
     }
@@ -474,7 +543,9 @@ internal fun withSharedLocation(result: RaspCheckResult, location: RaspLocationS
     ))
 }
 
-internal class RaspLeanShippingPolicy(private val heartbeatIntervalMillis: Long) {
+internal class RaspLeanShippingPolicy(heartbeatIntervalMillis: Long) {
+    /** Can change while running (remote config, Task 10.0). */
+    @Volatile var heartbeatIntervalMillis: Long = heartbeatIntervalMillis
     private val lastSignature = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val lastShippedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 

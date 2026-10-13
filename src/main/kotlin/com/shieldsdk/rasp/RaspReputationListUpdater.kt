@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   that came in the credential), and only when its version is not older
  *   than the list in use. A network attacker can therefore neither change
  *   it nor roll it back.
- * - Checked at most once per [REFRESH_INTERVAL_MILLIS] per process, on its
+ * - Checked at most once per interval (default [REFRESH_INTERVAL_MILLIS]) per process, on its
  *   own thread; detector ticks never wait for the network.
  * - The last accepted list is kept in app-private storage ([dir], production:
  *   `Context.filesDir`), so it survives restarts and works offline.
@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference
  */
 internal object RaspReputationListUpdater {
     const val REFRESH_INTERVAL_MILLIS: Long = 24L * 60 * 60 * 1000
+    /** Lower bound of the interval (RaspLeanConfig.malwareReputationRefreshHours, also from remote config). */
+    const val MIN_REFRESH_INTERVAL_MILLIS: Long = 60L * 60 * 1000
     const val FILE_NAME = "rasp_reputation_list.json"
     private const val MAX_BYTES = 1024 * 1024
     private const val TIMEOUT_MS = 8000
@@ -92,9 +94,16 @@ internal object RaspReputationListUpdater {
      * Starts a background check when one is due. [publicKey] must be the
      * key the app trusts; without it, or without a credential, nothing happens.
      */
-    fun refreshIfDue(dir: File, credential: RaspEventCredential?, publicKey: String?, bundled: String?, nowMillis: Long = System.currentTimeMillis()) {
+    fun refreshIfDue(
+        dir: File,
+        credential: RaspEventCredential?,
+        publicKey: String?,
+        bundled: String?,
+        nowMillis: Long = System.currentTimeMillis(),
+        intervalMillis: Long = REFRESH_INTERVAL_MILLIS,
+    ) {
         if (credential == null || publicKey.isNullOrBlank()) return
-        if (nowMillis - lastAttemptMillis < REFRESH_INTERVAL_MILLIS) return
+        if (nowMillis - lastAttemptMillis < intervalMillis.coerceAtLeast(MIN_REFRESH_INTERVAL_MILLIS)) return
         if (!running.compareAndSet(false, true)) return
         lastAttemptMillis = nowMillis
         executor.execute {
