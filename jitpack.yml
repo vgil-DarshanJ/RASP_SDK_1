@@ -13,6 +13,8 @@ jdk:
 before_install:
   - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.0 --target aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
   - $HOME/.cargo/bin/cargo install cargo-ndk --version 4.1.2 --locked
-  - yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.1.12297006" > /dev/null || yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
+  - curl -sSfo /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+  - unzip -q /tmp/clt.zip -d /tmp/clt
+  - yes | /tmp/clt/cmdline-tools/bin/sdkmanager --sdk_root="$ANDROID_HOME" --install "ndk;27.1.12297006" > /dev/null
 install:
   - PATH="$HOME/.cargo/bin:$PATH" ./gradlew --no-daemon publishToMavenLocal "-PraspEngineVersion=$VERSION"
