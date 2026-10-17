@@ -11,7 +11,7 @@
 jdk:
   - openjdk17
 before_install:
-  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.0 --target aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+  - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.0 --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
   - $HOME/.cargo/bin/cargo install cargo-ndk --version 4.1.2 --locked
   - curl -sSfo /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
   - unzip -q /tmp/clt.zip -d /tmp/clt
