@@ -111,4 +111,21 @@ class RaspHighRiskIpTest {
         val r = RaspGeoIpProbes.check(credential("http://127.0.0.1:$closedPort/v1/events"), RaspGeoIpProbes.HttpTransport, now)
         assertEquals(RaspCheckStatus.UNKNOWN, r.status)
     }
+
+    @Test fun `one dropped request is retried once, a second failure is UNKNOWN`() {
+        var calls = 0
+        val flaky = RaspGeoIpProbes.Transport { _, _ ->
+            calls += 1
+            if (calls == 1) null else RaspGeoIpProbes.Response(200, answer("IN", blocked = false))
+        }
+        assertEquals(RaspCheckStatus.SECURE, RaspGeoIpProbes.check(credential("https://rasp.example/v1/events"), flaky, now).status)
+        assertEquals(2, calls)
+
+        calls = 0
+        val down = RaspGeoIpProbes.Transport { _, _ -> calls += 1; throw java.io.IOException("reset") }
+        val r = RaspGeoIpProbes.check(credential("https://rasp.example/v1/events"), down, now)
+        assertEquals(RaspCheckStatus.UNKNOWN, r.status)
+        assertEquals("IP risk request failed (no answer from the backend)", r.reason)
+        assertEquals(2, calls)
+    }
 }

@@ -314,11 +314,14 @@ object RaspShieldCore {
 
     fun checkDeviceLockMissingBlocking(context: Context): RaspCheckResult =
         try {
-            when (RaspDeviceFingerprintProbes.isDeviceLockMissing(context)) {
-                true -> RaspCheckResult.detected("device_lock_missing")
-                false -> RaspCheckResult.secure("device_lock_missing")
-                null -> RaspCheckResult.unknown("device_lock_missing", "Keyguard state could not be read")
-            }
+            // Screen lock plus fingerprint enrolment: an enrolled fingerprint is
+            // a safety feature (SECURE); none enrolled is a low-level finding.
+            val deviceSecure = RaspDeviceFingerprintProbes.isDeviceLockMissing(context)?.not()
+            RaspDeviceFingerprintProbes.evaluateDeviceLock(
+                deviceSecure,
+                if (deviceSecure == true) RaspDeviceFingerprintProbes.biometricState(context)
+                else RaspDeviceFingerprintProbes.BiometricState.UNKNOWN,
+            )
         } catch (e: Exception) {
             notifyLogger("device_lock_missing", e)
             RaspCheckResult.unknown("device_lock_missing", "Keyguard state could not be read")
@@ -482,8 +485,19 @@ object RaspShieldCore {
                 ?: return@runGuarded RaspCheckResult.error(
                     "repackage", "Could not read this build's own signing certificate"
                 )
-            if (mismatch) RaspCheckResult.detected("repackage")
-            else RaspCheckResult.secure("repackage")
+            if (mismatch) return@runGuarded RaspCheckResult.detected("repackage")
+            // PackageManager agrees; the APK file's own signing block must too,
+            // or PackageManager is being answered by a hook (signature kill).
+            val block = RaspSigningProbes.apkSigningBlock(context)
+            val evidence = listOf(RaspEvidence("apk_signing_block", block.status.name.lowercase()))
+            when (block.status) {
+                RaspApkSigningBlock.Status.VERIFIED ->
+                    if (block.provenCertificatesSha256.none { RaspTamperAnalysis.hashesEqual(it, expected) }) {
+                        RaspCheckResult.detected("repackage", evidence + RaspEvidence("package_manager_cert_spoofed", true))
+                    } else RaspCheckResult.secure("repackage", evidence)
+                RaspApkSigningBlock.Status.INVALID -> RaspCheckResult.detected("repackage", evidence)
+                else -> RaspCheckResult.secure("repackage", evidence)
+            }
         }
 
     fun checkRepackagingAsync(context: Context, callback: (RaspCheckResult) -> Unit) =
@@ -750,6 +764,22 @@ object RaspShieldCore {
         nonce: String,
         onResult: (Result<String>) -> Unit,
     ) = RaspPlayIntegrityBridge(context).requestToken(nonce, onResult)
+
+    /**
+     * Play Integrity checked by the backend (`/v1/integrity/challenge` →
+     * token → `/v1/integrity/verify`); see [RaspPlayIntegrityVerifier].
+     * Blocking — call off the main thread. [cloudProjectNumber]: see
+     * [RaspPlayIntegrityBridge].
+     */
+    @JvmOverloads
+    fun verifyPlayIntegrityBlocking(
+        context: Context,
+        credential: RaspEventCredential,
+        cloudProjectNumber: Long? = null,
+    ): RaspPlayIntegrityVerifier.Outcome {
+        val bridge = RaspPlayIntegrityBridge(context, cloudProjectNumber = cloudProjectNumber)
+        return RaspPlayIntegrityVerifier(context.packageName, bridge::requestToken).verifyBlocking(credential)
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // Whole-catalog orchestration (Phase 9)

@@ -80,14 +80,18 @@ public object RaspGeoIpProbes {
             put("X-Signature", RaspHmacSigner.sign(credential.apiSecret, timestamp, ByteArray(0)))
             if (!deviceKeyId.isNullOrBlank()) put("X-Device-Key-Id", deviceKeyId)
         }
-        val response = try {
-            transport.get(url, headers)
-        } catch (e: Exception) {
-            null
-        }
+        // One retry: a single dropped request (Wi-Fi hiccup, a socket the
+        // server just closed) should not turn into a minute of UNKNOWN.
+        val response = getOrNull(transport, url, headers) ?: getOrNull(transport, url, headers)
         val result = evaluate(response)
         return if (host == null) result
         else result.copy(evidence = result.evidence + RaspEvidence("endpoint_host", host))
+    }
+
+    private fun getOrNull(transport: Transport, url: String, headers: Map<String, String>): Response? = try {
+        transport.get(url, headers)
+    } catch (e: Exception) {
+        null
     }
 
     /** The backend's high-risk reasons; any of these makes the result DETECTED. */
@@ -190,6 +194,10 @@ public object RaspGeoIpProbes {
                     readTimeout = TIMEOUT_MS
                     requestMethod = "GET"
                     instanceFollowRedirects = false
+                    // One request every few minutes: a pooled keep-alive
+                    // socket is usually already closed by the server (Node:
+                    // 5 s idle) and reusing it fails with no answer.
+                    setRequestProperty("Connection", "close")
                     headers.forEach { (k, v) -> setRequestProperty(k, v) }
                 }
                 val status = connection.responseCode

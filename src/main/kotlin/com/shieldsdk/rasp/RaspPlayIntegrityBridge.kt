@@ -29,6 +29,12 @@ class RaspPlayIntegrityBridge(
     private val context: Context,
     private val integrityManager: IntegrityManager =
         IntegrityManagerFactory.create(context.applicationContext),
+    /**
+     * Google Cloud project number linked to Play Integrity. Needed when the
+     * app is not (yet) distributed through Google Play, e.g. sideloaded test
+     * builds; `null` = the project linked in Play Console.
+     */
+    private val cloudProjectNumber: Long? = null,
 ) {
     /**
      * Heuristic-only "does Play Integrity look reachable" probe — presence
@@ -62,7 +68,9 @@ class RaspPlayIntegrityBridge(
             return
         }
         try {
-            val request = IntegrityTokenRequest.builder().setNonce(nonce).build()
+            val request = IntegrityTokenRequest.builder().setNonce(nonce)
+                .apply { cloudProjectNumber?.let { setCloudProjectNumber(it) } }
+                .build()
             integrityManager.requestIntegrityToken(request)
                 .addOnSuccessListener { response ->
                     onResult(Result.success(response.token()))

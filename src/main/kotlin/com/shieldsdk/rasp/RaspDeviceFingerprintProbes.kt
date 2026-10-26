@@ -153,4 +153,65 @@ public object RaspDeviceFingerprintProbes {
     } catch (e: Exception) {
         null
     }
+
+    /** Whether the person has a fingerprint (or face) enrolled in system settings. */
+    enum class BiometricState { ENROLLED, NONE_ENROLLED, NO_HARDWARE, UNKNOWN }
+
+    /**
+     * Biometric enrolment from `android.hardware.biometrics.BiometricManager`
+     * (Android 10+; needs the normal permission USE_BIOMETRIC, declared by
+     * this module). [BiometricState.UNKNOWN] before Android 10, when the
+     * service or permission is missing, or when the platform cannot say
+     * (hardware busy, security update required, unsupported) — never read as
+     * enrolled.
+     */
+    fun biometricState(context: Context): BiometricState = try {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            BiometricState.UNKNOWN
+        } else {
+            val bm = context.getSystemService(android.hardware.biometrics.BiometricManager::class.java)
+            val code = when {
+                bm == null -> null
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
+                    bm.canAuthenticate(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_WEAK)
+                else -> @Suppress("DEPRECATION") bm.canAuthenticate()
+            }
+            biometricStateOf(code)
+        }
+    } catch (e: Exception) {
+        BiometricState.UNKNOWN
+    }
+
+    /** `BiometricManager.BIOMETRIC_*` code → state. Pure; `null` and unlisted codes are UNKNOWN. */
+    @JvmStatic
+    fun biometricStateOf(code: Int?): BiometricState = when (code) {
+        0 -> BiometricState.ENROLLED          // BIOMETRIC_SUCCESS
+        11 -> BiometricState.NONE_ENROLLED    // BIOMETRIC_ERROR_NONE_ENROLLED
+        12 -> BiometricState.NO_HARDWARE      // BIOMETRIC_ERROR_NO_HARDWARE
+        else -> BiometricState.UNKNOWN        // HW_UNAVAILABLE, UNSUPPORTED, STATUS_UNKNOWN, ...
+    }
+
+    /**
+     * `device_lock_missing` verdict. Pure.
+     *
+     * - no screen lock at all → DETECTED (a fingerprint cannot exist without one);
+     * - lock set and a fingerprint/face enrolled → SECURE (a strong safety feature);
+     * - lock set but nothing enrolled → DETECTED (the severity is low: the
+     *   phone still needs a PIN, pattern or password);
+     * - lock set and the phone has no biometric hardware → SECURE (nothing to enrol);
+     * - anything unreadable → UNKNOWN, never SECURE.
+     */
+    fun evaluateDeviceLock(deviceSecure: Boolean?, biometric: BiometricState): RaspCheckResult {
+        val id = "device_lock_missing"
+        fun evidence(lock: String, bio: String) =
+            listOf(RaspEvidence("screen_lock", lock), RaspEvidence("biometric", bio))
+        if (deviceSecure == null) return RaspCheckResult.unknown(id, "Keyguard state could not be read")
+        if (!deviceSecure) return RaspCheckResult.detected(id, evidence("none", "not_enrolled"))
+        return when (biometric) {
+            BiometricState.ENROLLED -> RaspCheckResult.secure(id, evidence("set", "enrolled"))
+            BiometricState.NONE_ENROLLED -> RaspCheckResult.detected(id, evidence("set", "not_enrolled"))
+            BiometricState.NO_HARDWARE -> RaspCheckResult.secure(id, evidence("set", "no_hardware"))
+            BiometricState.UNKNOWN -> RaspCheckResult.unknown(id, "Fingerprint enrolment could not be read")
+        }
+    }
 }

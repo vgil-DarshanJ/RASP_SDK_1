@@ -52,6 +52,39 @@ public object RaspSigningProbes {
         ""
     }
 
+    /**
+     * SHA-256 (uppercase hex) of every certificate PackageManager reports for
+     * this app: the current signers and, after key rotation, the whole
+     * rotation history. Empty when it could not be read.
+     */
+    fun packageManagerCertsSha256(context: Context): List<String> = try {
+        val pm = context.packageManager
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signingInfo = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+            when {
+                signingInfo == null -> null
+                signingInfo.hasMultipleSigners() -> signingInfo.apkContentsSigners
+                else -> signingInfo.signingCertificateHistory
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES).signatures
+        }
+        signatures.orEmpty().map { RaspTamperAnalysis.sha256Hex(it.toByteArray()) }.distinct()
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    /**
+     * The certificates in the installed base APK's signing block, read from
+     * the file rather than from PackageManager (see [RaspApkSigningBlock]).
+     */
+    fun apkSigningBlock(context: Context): RaspApkSigningBlock.Info {
+        val path = try { context.applicationInfo.sourceDir } catch (e: Exception) { null }
+            ?: return RaspApkSigningBlock.Info(RaspApkSigningBlock.Status.UNREADABLE, problem = "no sourceDir")
+        return RaspApkSigningBlock.read(path)
+    }
+
     /** `null` when it could not be determined (certificate unreadable). */
     fun isDebugCertificate(context: Context): Boolean? = try {
         val pm = context.packageManager

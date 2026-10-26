@@ -21,7 +21,13 @@ import java.util.zip.ZipFile
  *   partition) and its directory exists — always checked;
  * - `classes_dex` / `resources_arsc`: SHA-256 of the APK's dex code and
  *   resource table against values baked at build time, when present
- *   (see [dexSha256] for the exact digest).
+ *   (see [dexSha256] for the exact digest);
+ * - `apk_signing_block`: the certificates in the installed APK file's own
+ *   signing block ([RaspApkSigningBlock]) — every signer verifies, at least
+ *   one of them is a certificate PackageManager reports (otherwise
+ *   PackageManager is being answered by a hook: "signature kill"), and the
+ *   expected certificate, when configured, is one of them — always checked
+ *   when the block was read.
  *
  * Verdict: any mismatch → DETECTED (each failed check named in `failed_check`);
  * else a check that could not be read → ERROR; else nothing configured beyond
@@ -62,6 +68,10 @@ object RaspTamperAnalysis {
         val resourcesArscSha256: String? = null,
         /** `false` when the APK could not be read for the hashes that were asked for. */
         val apkEntriesReadable: Boolean = true,
+        /** The APK file's signing block; `null` when it was not read. */
+        val apkSigningBlock: RaspApkSigningBlock.Info? = null,
+        /** Every certificate PackageManager reports (incl. rotation history); empty = unreadable. */
+        val packageManagerCertsSha256: List<String> = emptyList(),
     )
 
     enum class Check { MATCH, MISMATCH, NOT_CONFIGURED, UNREADABLE }
@@ -100,6 +110,7 @@ object RaspTamperAnalysis {
         }
         checks["classes_dex"] = hashCheck(e.classesDexSha256, o.classesDexSha256, o.apkEntriesReadable)
         checks["resources_arsc"] = hashCheck(e.resourcesArscSha256, o.resourcesArscSha256, o.apkEntriesReadable)
+        checks["apk_signing_block"] = signingBlockCheck(o, e)
 
         val failed = checks.filterValues { it == Check.MISMATCH }.keys
         val unreadable = checks.filterValues { it == Check.UNREADABLE }.keys
@@ -112,6 +123,18 @@ object RaspTamperAnalysis {
             if (o.apkPath != null && checks["apk_path"] == Check.MISMATCH) add(RaspEvidence("apk_path", o.apkPath))
             o.classesDexSha256?.let { add(RaspEvidence("classes_dex_sha256", it)) }
             o.resourcesArscSha256?.let { add(RaspEvidence("resources_arsc_sha256", it)) }
+            o.apkSigningBlock?.let { block ->
+                add(RaspEvidence("apk_signing_block", block.status.name.lowercase()))
+                if (block.schemes.isNotEmpty()) add(RaspEvidence("apk_signature_schemes", block.schemes.joinToString(",")))
+                block.certificatesSha256.firstOrNull()?.let { add(RaspEvidence("apk_block_cert_sha256", it)) }
+                block.problem?.let { add(RaspEvidence("apk_signing_block_problem", it)) }
+                if (checks["apk_signing_block"] == Check.MISMATCH && block.status == RaspApkSigningBlock.Status.VERIFIED &&
+                    o.packageManagerCertsSha256.isNotEmpty() && block.certificatesSha256.none { it in o.packageManagerCertsSha256 }
+                ) {
+                    add(RaspEvidence("package_manager_cert_spoofed", true,
+                        "PackageManager reports a certificate that did not sign the installed APK"))
+                }
+            }
             if (e.signingCertSha256 == null) {
                 add(RaspEvidence("expected_signing_certificate", "not_configured",
                     "Set RaspLeanConfig.expectedSigningCertSha256 / configureExpectedSigningCertificate()"))
@@ -125,6 +148,27 @@ object RaspTamperAnalysis {
             )
             !e.anythingConfigured -> RaspCheckResult(DETECTOR_ID, RaspCheckStatus.UNKNOWN, evidence, reason = NOT_CONFIGURED)
             else -> RaspCheckResult.secure(DETECTOR_ID, evidence)
+        }
+    }
+
+    /**
+     * ABSENT (v1-only signing) and not-read are NOT_CONFIGURED: nothing to
+     * compare. An unparsable or non-verifying block on an installed APK is a
+     * MISMATCH, because Android would not have installed it.
+     */
+    private fun signingBlockCheck(o: Observation, e: Expected): Check {
+        val block = o.apkSigningBlock ?: return Check.NOT_CONFIGURED
+        return when (block.status) {
+            RaspApkSigningBlock.Status.ABSENT -> Check.NOT_CONFIGURED
+            RaspApkSigningBlock.Status.UNREADABLE -> Check.UNREADABLE
+            RaspApkSigningBlock.Status.INVALID -> Check.MISMATCH
+            RaspApkSigningBlock.Status.VERIFIED -> {
+                val certs = block.certificatesSha256
+                val pmAgrees = o.packageManagerCertsSha256.isEmpty() ||
+                    certs.any { c -> o.packageManagerCertsSha256.any { hashesEqual(it, c) } }
+                val expectedSigned = e.signingCertSha256 == null || block.provenCertificatesSha256.any { hashesEqual(it, e.signingCertSha256) }
+                if (pmAgrees && expectedSigned) Check.MATCH else Check.MISMATCH
+            }
         }
     }
 
@@ -168,6 +212,8 @@ object RaspTamperAnalysis {
             classesDexSha256 = dex,
             resourcesArscSha256 = arsc,
             apkEntriesReadable = entriesReadable,
+            apkSigningBlock = RaspSigningProbes.apkSigningBlock(context),
+            packageManagerCertsSha256 = RaspSigningProbes.packageManagerCertsSha256(context),
         )
     }
 

@@ -12,9 +12,10 @@ function keeps its Kotlin implementation as the fallback.
 | `io.rs` | bounded reads (`std::fs`: `openat`/`read` through bionic, no Java I/O) | maps / mounts |
 | `jni_entry.rs` | `JNI_OnLoad` + RegisterNatives; the only module allowed `unsafe_code` | — |
 
-**Not ported: the APK signing-block parser** (Task 9.0 item 3d). The engine
-has no such parser in Kotlin to port, and this task ports existing checks
-only; writing a new one is a separate decision.
+**Not ported: the APK signing-block parser** (Task 9.0 item 3d). It now
+exists in Kotlin (`RaspApkSigningBlock.kt`: v2/v3/v3.1 signers, signature and
+key-rotation lineage verified, used by `tamper` and `repackage`); a Rust port
+would be a later step.
 
 ## Build
 

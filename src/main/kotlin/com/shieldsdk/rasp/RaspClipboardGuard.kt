@@ -3,6 +3,7 @@ package com.shieldsdk.rasp
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 
 /**
  * Clipboard protection.
@@ -110,7 +111,13 @@ class RaspClipboardGuard(
     fun clear(): Boolean {
         val manager = clipboardManager ?: return false
         return try {
-            manager.setPrimaryClip(ClipData.newPlainText("", ""))
+            // clearPrimaryClip (API 28+) empties it without the "Copied"
+            // pop-up Android 13+ shows for every setPrimaryClip.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                manager.clearPrimaryClip()
+            } else {
+                manager.setPrimaryClip(ClipData.newPlainText("", ""))
+            }
             true
         } catch (e: Exception) {
             false

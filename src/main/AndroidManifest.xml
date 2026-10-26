@@ -76,4 +76,10 @@
          networking, so this is rarely a new addition in practice — merges
          automatically into any host app that depends on this module. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- USE_BIOMETRIC — a normal permission (granted at install, no prompt)
+         that lets device_lock_missing ask BiometricManager whether a
+         fingerprint or face is enrolled. Nothing is scanned or read: only
+         the yes/no enrolment state. Without it that part reports UNKNOWN. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
 </manifest>
